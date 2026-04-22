@@ -97,7 +97,7 @@ CLI Intel 8080 assembler, available on npm as `asm8080`), invoked via
 ## Further reading
 
 - RK86 programmer's reference:
-  [`rk86-js-kit/info/RK86.md`](https://github.com/begoon/rk86-js-kit/info/RK86.md) — memory
+  [`rk86-js-kit/info/RK86.md`](https://github.com/begoon/rk86-js-kit/blob/main/info/RK86.md) — memory
   map, peripherals, character set, monitor jump table, tape format.
 - Monitor ROM source:
   [begoon/rk86-monitor](https://github.com/begoon/rk86-monitor) — the
