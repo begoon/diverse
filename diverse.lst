@@ -1,0 +1,3062 @@
+0000:                       org  0000h
+                            section diverse
+
+                    ; ---- RK86 monitor ROM entry points (F800h-FFFFh) ----
+                    ; Public jump-table slots are documented in ../rk86-js-kit/info/RK86.md
+                    ; and in the monitor source at ../rk86-monitor/monitor.asm. FD27h is
+                    ; the internal SOUND routine (see CLAUDE.md); FAE0h is the tail of
+                    ; entry_video (status poll + DMA setup), reused to inject a custom
+                    ; SCN4 byte while keeping the rest of the monitor's video init.
+                    ; ---- RK86 video memory ----
+                    ; Video RAM: 30 rows × 78 cols = 2340 bytes at 76D0h..7FF4h.
+                    ; Address of cell (row, col) = video_memory + row*video_stride + col.
+=76D0               video_memory     equ 76D0h      ; start of video RAM
+=004E               video_stride     equ 78         ; bytes per row (= chars per row)
+=77C2               game_area_tl     equ video_memory + 3*video_stride + 8    ; 77C2h -- top-left of 64x25 text window
+
+=F803               rom_getc         equ 0F803h     ; GETC     -- blocking keyboard read; A = key code
+=F809               rom_putc         equ 0F809h     ; PUTC     -- print char; C = character
+=F815               rom_hexb         equ 0F815h     ; HEXB     -- print A as two hex digits
+=F818               rom_puts         equ 0F818h     ; PUTS     -- print NUL-terminated string at HL
+=F81B               rom_scan_kbd     equ 0F81Bh     ; SCAN_KBD -- raw matrix scan; A = FFh/FEh/code
+=F82D               rom_video        equ 0F82Dh     ; VIDEO    -- reinitialize CRT controller
+=F830               rom_getlim       equ 0F830h     ; GETLIM   -- HL = memory limit
+=F86C               rom_prompt_loop  equ 0F86Ch     ; PROMPT   -- warm restart to monitor prompt
+=FAE0               rom_video_tail   equ 0FAE0h     ; tail of entry_video: status poll + DMA setup
+=FD27               rom_sound        equ 0FD27h     ; SOUND    -- beep (B=duration, C=half-period)
+
+0000:               loc_0000:
+0000: C3 F0 0B              jmp  main
+                    ; ---- Game-local trampolines into the monitor ROM. These 3-byte jmps
+                    ; give the game a compact "vector table" at the low end of its address
+                    ; space so most call sites can fit a 2-byte `rst n` trampoline pattern
+                    ; during hand-assembly. Each slot is reachable via CALL <offset>.
+0003:               monitor_scan_kbd:                       ; offset=0003h
+0003: C3 1B F8              jmp  rom_scan_kbd
+0006:               monitor_putc:                           ; offset=0006h
+0006: C3 09 F8              jmp  rom_putc
+0009:               monitor_puts:                           ; offset=0009h
+0009: C3 18 F8              jmp  rom_puts
+000C:               monitor_hexb:                           ; offset=000Ch
+000C: C3 15 F8              jmp  rom_hexb
+000F:               monitor_getlim:                         ; offset=000Fh
+000F: C3 30 F8              jmp  rom_getlim
+0012:               monitor_prompt:                         ; offset=0012h
+0012: C3 6C F8              jmp  rom_prompt_loop
+0015:               monitor_beep:                           ; offset=0015h
+0015: C3 27 FD              jmp  rom_sound
+                    ; ---- Game state variables at 0018h..003Ch ----
+                    ; Bytes 0018h..003Ah are zeroed on every new game by the init loop at
+                    ; loc_0247; the "initial" byte values shown here are effectively don't-care
+                    ; since they get overwritten before first use. 003Bh/003Ch persist across
+                    ; games (beep frequency ramp and РУС/ЛАТ case mask).
+                    ;
+                    ; Screen coordinates follow the mapping in xy_to_vaddr:
+                    ;   video_addr = 77C2h + (24 - y) * 78 + x
+                    ; y = 1 is bottom row of the game field, y = 24 is top; x = 1 is leftmost.
+
+0018:               player_x:               ; offset 0018h -- player turret column (1..57)
+0018: 56                    db   56h
+0019:               saboteur_x:             ; offset 0019h -- flying diversant column (1..3Ch)
+0019: 04                    db   04h
+001A:               climber_x:              ; offset 001Ah -- climbing diversant column (0 = none)
+001A: 59                    db   59h
+001B:               torpedo_x:              ; offset 001Bh -- player torpedo column
+001B: 04                    db   04h
+001C:               ufo_x:                  ; offset 001Ch -- martian UFO column
+001C: 5C                    db   5Ch
+001D:               player_y:               ; offset 001Dh -- player row (2..23)
+001D: 04                    db   04h
+001E:               saboteur_y:             ; offset 001Eh -- flying diversant row
+001E: 61                    db   61h
+001F:               climber_y:              ; offset 001Fh -- climbing diversant row
+001F: 04                    db   04h
+0020:               torpedo_y:              ; offset 0020h -- player torpedo row
+0020: 69                    db   69h
+0021:               ufo_y:                  ; offset 0021h -- martian UFO row
+0021: 04                    db   04h
+0022:               saboteur_active:        ; offset 0022h -- 1 = flying diversant on screen
+0022: 8B                    db   8Bh
+0023:               saboteur_timer:         ; offset 0023h -- frames until next diversant step
+0023: 04                    db   04h
+0024:               kbd_debounce:           ; offset 0024h -- ignore repeat input while > 0
+0024: 8E                    db   8Eh
+0025:               climber_timer:          ; offset 0025h -- frames until climber moves up a row
+0025: 04                    db   04h
+0026:               torpedo_timer:          ; offset 0026h -- frames until torpedo moves one cell
+0026: 9A                    db   9Ah
+0027:               ufo_timer:              ; offset 0027h -- frames until UFO animation tick
+0027: 04                    db   04h
+0028:               saboteur_dir:           ; offset 0028h -- 1 = moving left, 2 = moving right
+0028: 9E                    db   9Eh
+0029:               climber_active:         ; offset 0029h -- 1 = landed diversant climbing up
+0029: 04                    db   04h
+002A:               unused_002A:            ; offset 002Ah -- zeroed by init, never read
+002A: A7                    db   0A7h
+002B:               score_lo:               ; offset 002Bh -- BCD, low two digits of score
+002B: 04                    db   04h
+002C:               score_hi:               ; offset 002Ch -- BCD, high two digits of score
+002C: BF                    db   0BFh
+002D:               diversants_landed:      ; offset 002Dh -- BCD; game over at 16 (10h) landed
+002D: 04                    db   04h
+002E:               saved_climber_x:        ; offset 002Eh -- snapshot of climber_x for redraw
+002E: ED                    db   0EDh
+002F:               score_positive:         ; offset 002Fh -- 1 = positive score, 0 = "debt"
+002F: 04                    db   04h
+0030:               rng_state:              ; offset 0030h -- PRNG seed (see rng_next)
+0030: 01                    db   01h
+0031:               unused_0031:            ; offset 0031h -- unused
+0031: 05                    db   05h
+0032:               torpedo_active:         ; offset 0032h -- 1 = torpedo in flight
+0032: 33                    db   33h
+0033:               autotarget_on:          ; offset 0033h -- 1 = auto-targeting bonus awarded
+0033: 01                    db   01h
+0034:               hit_counter:            ; offset 0034h -- raw kill count; autotarget at 32h
+0034: 3F                    db   3Fh
+0035:               score_delta_lo:         ; offset 0035h -- BCD bonus added by score_add
+0035: 05                    db   05h
+0036:               score_delta_hi:         ; offset 0036h
+0036: 45                    db   45h
+0037:               score_penalty_lo:       ; offset 0037h -- BCD penalty subtracted by score_sub
+0037: 05                    db   05h
+0038:               score_penalty_hi:       ; offset 0038h
+0038: 49                    db   49h
+0039:               ufo_active:             ; offset 0039h -- 1 = UFO on screen
+0039: 05                    db   05h
+003A:               ufo_anim_phase:         ; offset 003Ah -- 0..6, selects UFO glyph pattern
+003A: 4F                    db   4Fh
+003B:               shoot_beep_freq:        ; offset 003Bh -- frequency ramp for shoot beep
+003B: 05                    db   05h
+003C:               letter_case_mask:       ; offset 003Ch -- 20h/00h, xor'd with letter key codes
+003C: 20                    db   20h
+                    ; Reinitialize the К580ВГ75 CRT controller to 78x30 text mode and
+                    ; hand off to the monitor's tail to finish DMA/buffer setup. The
+                    ; Reset command (00h on C001h) takes four parameter bytes on C000h,
+                    ; then Start Display (27h on C001h) re-enables output.
+                    ;
+                    ; vs the monitor's stock 93h SCN4, this one swaps the cursor to a
+                    ; non-blinking underline (so there's no 500 ms blink during play).
+003D:               video_init:                             ; offset 003Dh
+003D: E5                    push h
+003E: 21 01 C0              lxi  h, 0C001h
+0041: 36 00                 mvi  m, 00h              ; command: RESET (4 SCN params follow)
+0043: 2B                    dcx  h
+0044: 36 4D                 mvi  m, 4Dh              ; SCN1: 78 chars/row (H = 77)
+0046: 36 1D                 mvi  m, 1Dh              ; SCN2: 30 rows/frame (V = 29, VR = 0)
+0048: 36 99                 mvi  m, 99h              ; SCN3: 10 lines/row, underline at line 9
+004A: 36 F3                 mvi  m, 0F3h             ; SCN4: L=1 non-offset, F=1 non-transparent,
+                                                     ;       C=11 non-blinking underline cursor,
+                                                     ;       Z=3 horizontal retrace = 8 char clocks
+004C: 23                    inx  h
+004D: 36 27                 mvi  m, 27h              ; command: START DISPLAY (begin DMA fetch)
+004F: C3 E0 FA              jmp  rom_video_tail      ; monitor tail: program DMA + buffer pointers
+                    ; Redraw the score line: "OCHKI : HHLL" where HHLL is the 2-byte BCD
+                    ; score (score_hi, score_lo). Cursor is parked at row 24, col 34 by
+                    ; the embedded ESC-Y sequence in str_ochki.
+0052:               draw_score:                             ; offset 0052h
+0052: 21 64 00              lxi  h, str_ochki
+0055: CD 09 00              call monitor_puts
+0058: 2A 2B 00              lhld score_lo                   ; L = score_lo, H = score_hi
+005B: 7C                    mov  a, h
+005C: CD 0C 00              call monitor_hexb
+005F: 7D                    mov  a, l
+0060: CD 0C 00              call monitor_hexb
+0063: C9                    ret
+0064:               str_ochki:                              ; offset 0064h
+0064: 1B 59 38 42           db   1Bh, 'Y', 38h, 42h       ; ESC Y row=24 col=34
+0068: 6F 7E 6B 69           db   'o~ki : ', 00h           ; "OCHKI :" -- points :
+006C: 20 3A 20 00
+                    ; Draw the "DIVERSANTY : " label at row 24, col 10. diversants_landed
+                    ; is printed as a two-hex-digit BCD number separately after this call.
+0070:               draw_diversants_label:                  ; offset 0070h
+0070: 21 77 00              lxi  h, str_diversanty
+0073: CD 09 00              call monitor_puts
+0076: C9                    ret
+0077:               str_diversanty:                         ; offset 0077h
+0077: 1B 59 38 2A           db   1Bh, 'Y', 38h, 2Ah       ; ESC Y row=24 col=10
+007B: 64 69 77 65           db   'diwersanty : ', 00h     ; "DIVERSANTY :" -- saboteurs :
+007F: 72 73 61 6E
+0083: 74 79 20 3A
+0087: 20 00
+                    ; Show the "ONI VAS UNICHTOZHILI / UPLATITE 15 KOPEEK" game-over
+                    ; message at row 16, col 12. Shown when diversants_landed reaches 16.
+0089:               show_game_over:                         ; offset 0089h
+0089: 21 90 00              lxi  h, str_game_over
+008C: CD 09 00              call monitor_puts
+008F: C9                    ret
+0090:               str_game_over:                          ; offset 0090h
+0090: 1B 59 30 2C           db   1Bh, 'Y', 30h, 2Ch       ; ESC Y row=16 col=12
+0094: 6F 6E 69 20           db   'oni was uni~tovili !!!', 0Dh, 0Ah    ; "ONI VAS UNICHTOZHILI !!!" CR LF -- they destroyed you !!!
+0098: 77 61 73 20
+009C: 75 6E 69 7E
+00A0: 74 6F 76 69
+00A4: 6C 69 20 21
+00A8: 21 21 0D 0A
+00AC: 75 70 6C 61           db   'uplatite 15 kopeek', 00h             ; "UPLATITE 15 KOPEEK" -- pay 15 kopecks
+00B0: 74 69 74 65
+00B4: 20 31 35 20
+00B8: 6B 6F 70 65
+00BC: 65 6B 00
+                    ; Map game coordinates (B=x, C=y) to a video RAM address in HL.
+                    ;   hl = 77C2h + (18h - y) * 4Eh + x
+                    ; 77C2h is the top-left of the monitor's 64x25 text window and 4Eh=78
+                    ; is the row stride. The (18h - y) inversion makes y=1 the bottom of
+                    ; the play field and y=24 the top.
+00BF:               xy_to_vaddr:                            ; offset 00BFh
+00BF: C5                    push b
+00C0: D5                    push d
+00C1: F5                    push psw
+00C2: 21 C2 77              lxi  h, game_area_tl            ; 77C2h -- top-left of 64x25 text window
+00C5: 3E 18                 mvi  a, 18h                     ; flip y: a = 24 - y
+00C7: 91                    sub  c
+00C8: 4F                    mov  c, a
+00C9: 0C                    inr  c                          ; pre-increment for dcr/jz loop
+00CA: 11 4E 00              lxi  d, video_stride            ; 004Eh -- bytes per row
+00CD:               loc_00CD:
+00CD: 0D                    dcr  c
+00CE: CA D5 00              jz   loc_00D5
+00D1: 19                    dad  d                          ; hl += 78 per row
+00D2: C3 CD 00              jmp  loc_00CD
+00D5:               loc_00D5:
+00D5: 58                    mov  e, b                       ; d=0 from lxi above; de = x
+00D6: 19                    dad  d                          ; hl += x
+00D7: F1                    pop  psw
+00D8: D1                    pop  d
+00D9: C1                    pop  b
+00DA: C9                    ret
+                    ; Draw the 3-cell player turret glyph at HL: "* ^ *" (asterisk, arrow
+                    ; up, asterisk). HL must be xy_to_vaddr(player_x, player_y).
+00DB:               draw_turret:                            ; offset 00DBh
+00DB: 36 2A                 mvi  m, 2Ah                     ; '*'
+00DD: 23                    inx  h
+00DE: 36 0B                 mvi  m, 0Bh                     ; arrow up
+00E0: 23                    inx  h
+00E1: 36 2A                 mvi  m, 2Ah                     ; '*'
+00E3: C9                    ret
+                    ; Draw the 3-cell flying diversant glyph at HL (▞▞▖).
+00E4:               draw_saboteur:                          ; offset 00E4h
+00E4: 36 12                 mvi  m, 12h
+00E6: 23                    inx  h
+00E7: 36 12                 mvi  m, 12h
+00E9: 23                    inx  h
+00EA: 36 10                 mvi  m, 10h
+00EC: C9                    ret
+                    ; Erase 6 consecutive screen cells starting at HL-1. Used to clear a
+                    ; 3-cell sprite plus one-cell margins on either side after movement.
+00ED:               clear_6_cells:                          ; offset 00EDh
+00ED: 2B                    dcx  h
+00EE: 36 20                 mvi  m, 20h
+00F0: 23                    inx  h
+00F1: 36 20                 mvi  m, 20h
+00F3: 23                    inx  h
+00F4: 36 20                 mvi  m, 20h
+00F6: 23                    inx  h
+00F7: 36 20                 mvi  m, 20h
+00F9: 23                    inx  h
+00FA: 36 20                 mvi  m, 20h
+00FC: 23                    inx  h
+00FD: 36 20                 mvi  m, 20h
+00FF: C9                    ret
+                    ; Return a pseudo-random byte in B in the range 0Fh..17h, i.e. a value
+                    ; suitable as a screen row index. Algorithm: step B forward (rng_state)
+                    ; times through a 0Eh..17h cycle, then save the result + 2Fh as the
+                    ; next seed. Used to place flying diversants at random rows.
+0100:               rng_next:                               ; offset 0100h
+0100: F5                    push psw
+0101: C5                    push b
+0102: 3A 30 00              lda  rng_state
+0105: 4F                    mov  c, a                       ; c = seed steps
+0106: 06 0E                 mvi  b, 0Eh
+0108:               loc_0108:
+0108: 78                    mov  a, b
+0109: FE 18                 cpi  18h                        ; wrap 18h back to 0Fh
+010B: C2 10 01              jnz  loc_0110
+010E: 06 0E                 mvi  b, 0Eh
+0110:               loc_0110:
+0110: 04                    inr  b
+0111: 0D                    dcr  c
+0112: 79                    mov  a, c
+0113: B1                    ora  c
+0114: C2 08 01              jnz  loc_0108
+0117: 78                    mov  a, b
+0118: C1                    pop  b
+0119: 47                    mov  b, a                       ; result in B
+011A: C6 2F                 adi  2Fh                        ; perturb seed for next call
+011C: 32 30 00              sta  rng_state
+011F: F1                    pop  psw
+0120: C9                    ret
+                    ; BCD-add the 2-byte value at score_delta_lo/score_delta_hi to the
+                    ; 2-byte score at score_lo/score_hi. If the final add carries, set
+                    ; score_positive = 1 (score overflowed back to positive territory).
+0121:               score_add:                              ; offset 0121h
+0121: E5                    push h
+0122: D5                    push d
+0123: C5                    push b
+0124: F5                    push psw
+0125: 0E 02                 mvi  c, 02h                     ; 2 bytes
+0127: 21 2B 00              lxi  h, score_lo
+012A: 11 35 00              lxi  d, score_delta_lo
+012D: 37                    stc
+012E: 3F                    cmc                             ; CY = 0
+012F:               loc_012F:
+012F: 7E                    mov  a, m
+0130: EB                    xchg
+0131: 8E                    adc  m
+0132: 27                    daa
+0133: EB                    xchg
+0134: 77                    mov  m, a
+0135: F5                    push psw
+0136: 79                    mov  a, c
+0137: FE 01                 cpi  01h
+0139: CA 3D 01              jz   loc_013D
+013C: F1                    pop  psw
+013D:               loc_013D:
+013D: 0D                    dcr  c
+013E: CA 46 01              jz   loc_0146
+0141: 13                    inx  d
+0142: 23                    inx  h
+0143: C3 2F 01              jmp  loc_012F
+0146:               loc_0146:
+0146: F1                    pop  psw
+0147: D2 4F 01              jnc  loc_014F
+014A: 3E 01                 mvi  a, 01h
+014C: 32 2F 00              sta  score_positive
+014F:               loc_014F:
+014F: F1                    pop  psw
+0150: C1                    pop  b
+0151: D1                    pop  d
+0152: E1                    pop  h
+0153: C9                    ret
+                    ; BCD-subtract the 2-byte value at score_penalty_lo/score_penalty_hi
+                    ; from score_lo/score_hi. If the final subtract produces no borrow
+                    ; (i.e. score went negative), clear score_positive = 0 -- the game
+                    ; shows "VY ZADOLZHALI GOSUDARSTVU" (you owe the state) in that case.
+0154:               score_sub:                              ; offset 0154h
+0154: E5                    push h
+0155: D5                    push d
+0156: C5                    push b
+0157: F5                    push psw
+0158: 11 2B 00              lxi  d, score_lo
+015B: 21 37 00              lxi  h, score_penalty_lo
+015E: 0E 02                 mvi  c, 02h
+0160: 37                    stc
+0161:               loc_0161:
+0161: 3E 99                 mvi  a, 99h
+0163: CE 00                 aci  00h
+0165: 96                    sub  m
+0166: EB                    xchg
+0167: 86                    add  m
+0168: 27                    daa
+0169: 77                    mov  m, a
+016A: F5                    push psw
+016B: 79                    mov  a, c
+016C: FE 01                 cpi  01h
+016E: CA 72 01              jz   loc_0172
+0171: F1                    pop  psw
+0172:               loc_0172:
+0172: EB                    xchg
+0173: 0D                    dcr  c
+0174: CA 7C 01              jz   loc_017C
+0177: 13                    inx  d
+0178: 23                    inx  h
+0179: C3 61 01              jmp  loc_0161
+017C:               loc_017C:
+017C: F1                    pop  psw
+017D: DA 84 01              jc   loc_0184
+0180: AF                    xra  a
+0181: 32 2F 00              sta  score_positive
+0184:               loc_0184:
+0184: F1                    pop  psw
+0185: C1                    pop  b
+0186: D1                    pop  d
+0187: E1                    pop  h
+0188: C9                    ret
+                    ; Copy bytes from [DE] to [HL] until a NUL is read from [DE]. NUL is
+                    ; NOT written to the destination.
+0189:               str_copy_until_nul:                     ; offset 0189h
+0189: 1A                    ldax d
+018A: B7                    ora  a
+018B: C8                    rz
+018C: 77                    mov  m, a
+018D: 13                    inx  d
+018E: 23                    inx  h
+018F: C3 89 01              jmp  str_copy_until_nul
+0192: 77                    db   77h                        ; dead byte (fell through from rz)
+                    ; Rising chirp: call monitor_beep with (B=09..13h, C=19..09h). Used
+                    ; as a positive feedback cue when a diversant is destroyed.
+0193:               beep_sweep_up:                          ; offset 0193h
+0193: F5                    push psw
+0194: C5                    push b
+0195: D5                    push d
+0196: 01 19 09              lxi  b, 0919h                   ; B=09h (duration), C=19h (period)
+0199: 16 15                 mvi  d, 15h
+019B:               loc_019B:
+019B: C5                    push b
+019C: CD 15 00              call monitor_beep
+019F: C1                    pop  b
+01A0: 04                    inr  b
+01A1: 04                    inr  b
+01A2: 0D                    dcr  c
+01A3: 0D                    dcr  c
+01A4: 78                    mov  a, b
+01A5: BA                    cmp  d
+01A6: DA 9B 01              jc   loc_019B
+01A9: D1                    pop  d
+01AA: C1                    pop  b
+01AB: F1                    pop  psw
+01AC: C9                    ret
+                    ; Descending click: a short sweep used as the key-press feedback
+                    ; inside get_key (called right after scan_kbd detects a key).
+01AD:               beep_sweep_down:                        ; offset 01ADh
+01AD: F5                    push psw
+01AE: C5                    push b
+01AF: D5                    push d
+01B0: 01 09 20              lxi  b, 2009h
+01B3: 16 09                 mvi  d, 09h
+01B5:               loc_01B5:
+01B5: C5                    push b
+01B6: CD 15 00              call monitor_beep
+01B9: C1                    pop  b
+01BA: 0C                    inr  c
+01BB: 05                    dcr  b
+01BC: 05                    dcr  b
+01BD: 78                    mov  a, b
+01BE: BA                    cmp  d
+01BF: D2 B5 01              jnc  loc_01B5
+01C2: D1                    pop  d
+01C3: C1                    pop  b
+01C4: F1                    pop  psw
+01C5: C9                    ret
+                    ; Click per torpedo cell moved, ramping pitch upward. shoot_beep_freq
+                    ; persists across calls so a long torpedo flight is a rising sweep.
+01C6:               beep_shoot:                             ; offset 01C6h
+01C6: F5                    push psw
+01C7: C5                    push b
+01C8: 3A 3B 00              lda  shoot_beep_freq
+01CB: 47                    mov  b, a
+01CC: 0E 08                 mvi  c, 08h
+01CE: 3C                    inr  a
+01CF: 32 3B 00              sta  shoot_beep_freq
+01D2: CD 15 00              call monitor_beep
+01D5: C1                    pop  b
+01D6: F1                    pop  psw
+01D7: C9                    ret
+                    ; Fixed low-pitched tone played when a diversant is hit.
+01D8:               beep_kill:                              ; offset 01D8h
+01D8: F5                    push psw
+01D9: C5                    push b
+01DA: 06 B0                 mvi  b, 0B0h
+01DC: 0E 08                 mvi  c, 08h
+01DE: CD 15 00              call monitor_beep
+01E1: C1                    pop  b
+01E2: F1                    pop  psw
+01E3: C9                    ret
+                    ; Blocking keyboard read. Plays a click on every press, Ctrl-C bails
+                    ; out to the monitor prompt, РУС/ЛАТ (0FEh) flips letter_case_mask,
+                    ; and for any letter key (>= 40h) the case mask is XOR'd in so the
+                    ; caller sees a consistent lowercase code regardless of case.
+01E4:               get_key:                                ; offset 01E4h
+01E4: C5                    push b
+01E5: 3A 3C 00              lda  letter_case_mask
+01E8: 4F                    mov  c, a
+01E9:               loc_01E9:
+01E9: CD 03 00              call monitor_scan_kbd
+01EC: FE FF                 cpi  0FFh                       ; no key yet -> keep polling
+01EE: CA E9 01              jz   loc_01E9
+01F1: CD AD 01              call beep_sweep_down            ; key-press click
+01F4: FE 03                 cpi  03h                        ; Ctrl-C: back to monitor
+01F6: CA 12 00              jz   monitor_prompt
+01F9: FE FE                 cpi  0FEh                       ; РУС/ЛАТ: toggle case mask
+01FB: CA 10 02              jz   get_key_toggle_case
+01FE: FE 40                 cpi  40h
+0200: DA 04 02              jc   loc_0204
+0203: A9                    xra  c                          ; letter -> apply case mask
+0204:               loc_0204:
+0204: 47                    mov  b, a
+0205:               loc_0205:
+0205: CD 03 00              call monitor_scan_kbd           ; wait for key release
+0208: FE FF                 cpi  0FFh
+020A: C2 05 02              jnz  loc_0205
+020D: 78                    mov  a, b
+020E: C1                    pop  b
+020F: C9                    ret
+0210:               get_key_toggle_case:                    ; offset 0210h
+0210: 3A 3C 00              lda  letter_case_mask
+0213: EE 20                 xri  20h
+0215: 32 3C 00              sta  letter_case_mask
+0218: 4F                    mov  c, a
+0219:               loc_0219:
+0219: CD 03 00              call monitor_scan_kbd           ; wait for РУС/ЛАТ release
+021C: FE FF                 cpi  0FFh
+021E: C2 19 02              jnz  loc_0219
+0221: C3 E9 01              jmp  loc_01E9
+0224:               game_start:
+0224: 0E 1F                 mvi  c, 1Fh
+0226: CD 06 00              call monitor_putc
+0229: CD 3D 00              call video_init
+022C: CD 0F 00              call monitor_getlim
+022F: F9                    sphl
+0230: 21 92 77              lxi  h, video_memory + 2*video_stride + 38    ; 7792h -- row 2, col 38 (top banner slot)
+0233: 36 4D                 mvi  m, 4Dh             ; 'M'
+0235: 23                    inx  h
+0236: 36 58                 mvi  m, 58h             ; 'X'
+0238: 23                    inx  h
+0239: 36 2D                 mvi  m, 2Dh             ; '-'
+023B: 23                    inx  h
+023C: 36 31                 mvi  m, 31h             ; '1'
+023E: 23                    inx  h
+023F: 36 32                 mvi  m, 32h             ; '2'    -> draws "MX-12" logo above the play field
+0241: 21 17 00              lxi  h, 0017h
+0244: 11 3A 00              lxi  d, ufo_anim_phase
+0247:               loc_0247:
+0247: 23                    inx  h
+0248: 36 00                 mvi  m, 00h
+024A: 7C                    mov  a, h
+024B: BA                    cmp  d
+024C: C2 47 02              jnz  loc_0247
+024F: 7D                    mov  a, l
+0250: BB                    cmp  e
+0251: C2 47 02              jnz  loc_0247
+                    ; Draw the ground row: 12 repeats of "███  " (three full blocks 7Fh +
+                    ; two spaces 20h) = 60 cells wide on screen row 26, col 9 onwards.
+0254: 21 C5 7E              lxi  h, video_memory + 26*video_stride + 9    ; 7EC5h -- row 26, col 9 (ground line)
+0257: 06 0C                 mvi  b, 0Ch              ; 12 pattern repeats
+0259:               loc_0259:
+0259: 0E 03                 mvi  c, 03h              ; 3 solid cells
+025B: 16 02                 mvi  d, 02h              ; 2 gap cells
+025D:               loc_025D:
+025D: 3E 7F                 mvi  a, 7Fh              ; '█' full block
+025F: 77                    mov  m, a
+0260: 23                    inx  h
+0261: 0D                    dcr  c
+0262: C2 5D 02              jnz  loc_025D
+0265:               loc_0265:
+0265: 3E 20                 mvi  a, 20h              ; ' ' space
+0267: 77                    mov  m, a
+0268: 23                    inx  h
+0269: 15                    dcr  d
+026A: C2 65 02              jnz  loc_0265
+026D: 05                    dcr  b
+026E: C2 59 02              jnz  loc_0259
+0271: CD 52 00              call draw_score
+0274: 3E 1E                 mvi  a, 1Eh
+0276: 32 18 00              sta  player_x
+0279: 47                    mov  b, a
+027A: 3E 02                 mvi  a, 02h
+027C: 32 1D 00              sta  player_y
+027F: 4F                    mov  c, a
+0280: CD BF 00              call xy_to_vaddr
+0283: CD DB 00              call draw_turret
+0286: 3E 02                 mvi  a, 02h
+0288: 32 28 00              sta  saboteur_dir
+028B: 3E 01                 mvi  a, 01h
+028D: 32 19 00              sta  saboteur_x
+0290: 47                    mov  b, a
+0291: 3E 18                 mvi  a, 18h
+0293: 32 1E 00              sta  saboteur_y
+0296: 4F                    mov  c, a
+0297: CD BF 00              call xy_to_vaddr
+029A: CD E4 00              call draw_saboteur
+029D: 3E 01                 mvi  a, 01h
+029F: 32 22 00              sta  saboteur_active
+02A2: 32 23 00              sta  saboteur_timer
+02A5: 32 27 00              sta  ufo_timer
+02A8: 32 24 00              sta  kbd_debounce
+02AB: 32 25 00              sta  climber_timer
+02AE: 32 26 00              sta  torpedo_timer
+02B1: 32 2F 00              sta  score_positive
+02B4: CD E4 01              call get_key
+02B7:               game_loop:
+02B7: 3A 22 00              lda  saboteur_active
+02BA: B7                    ora  a
+02BB: CA 2A 03              jz   loc_032A
+02BE: 3A 23 00              lda  saboteur_timer
+02C1: 3D                    dcr  a
+02C2: 32 23 00              sta  saboteur_timer
+02C5: B7                    ora  a
+02C6: C2 9B 03              jnz  loc_039B
+02C9:               saboteur_timer_reload:                  ; offset 02C9h -- SMC: difficulty patches +1
+02C9: 3E 0A                 mvi  a, 0Ah                     ; default (medium): 0Ah; easy=0Fh; hard unchanged
+02CB: 32 23 00              sta  saboteur_timer
+02CE: 3A 28 00              lda  saboteur_dir
+02D1: FE 01                 cpi  01h
+02D3: CA F2 02              jz   loc_02F2
+02D6: 3A 19 00              lda  saboteur_x
+02D9: 47                    mov  b, a
+02DA: 3A 1E 00              lda  saboteur_y
+02DD: 4F                    mov  c, a
+02DE: CD BF 00              call xy_to_vaddr
+02E1: CD ED 00              call clear_6_cells
+02E4: 04                    inr  b
+02E5: 78                    mov  a, b
+02E6: 32 19 00              sta  saboteur_x
+02E9: CD BF 00              call xy_to_vaddr
+02EC: CD E4 00              call draw_saboteur
+02EF: C3 0B 03              jmp  loc_030B
+02F2:               loc_02F2:
+02F2: 3A 19 00              lda  saboteur_x
+02F5: 47                    mov  b, a
+02F6: 3A 1E 00              lda  saboteur_y
+02F9: 4F                    mov  c, a
+02FA: CD BF 00              call xy_to_vaddr
+02FD: CD ED 00              call clear_6_cells
+0300: 78                    mov  a, b
+0301: 3D                    dcr  a
+0302: 32 19 00              sta  saboteur_x
+0305: CD BF 00              call xy_to_vaddr
+0308: CD E4 00              call draw_saboteur
+030B:               loc_030B:
+030B: 3A 19 00              lda  saboteur_x
+030E: FE 3D                 cpi  3Dh
+0310: D2 1B 03              jnc  loc_031B
+0313: FE 02                 cpi  02h
+0315: DA 1B 03              jc   loc_031B
+0318: C3 67 03              jmp  loc_0367
+031B:               loc_031B:
+031B: 3A 19 00              lda  saboteur_x
+031E: 3D                    dcr  a
+031F: 47                    mov  b, a
+0320: 3A 1E 00              lda  saboteur_y
+0323: 4F                    mov  c, a
+0324: CD BF 00              call xy_to_vaddr
+0327: CD ED 00              call clear_6_cells
+032A:               loc_032A:
+032A: CD 00 01              call rng_next
+032D: 3E 02                 mvi  a, 02h
+032F: 32 28 00              sta  saboteur_dir
+0332: 78                    mov  a, b
+0333: FE 13                 cpi  13h
+0335: DA 3D 03              jc   loc_033D
+0338: 3E 01                 mvi  a, 01h
+033A: 32 28 00              sta  saboteur_dir
+033D:               loc_033D:
+033D: CD 00 01              call rng_next
+0340: 78                    mov  a, b
+0341: 32 1E 00              sta  saboteur_y
+0344: 3E 01                 mvi  a, 01h
+0346: 32 19 00              sta  saboteur_x
+0349: 32 22 00              sta  saboteur_active
+034C: CD 00 01              call rng_next
+034F: 78                    mov  a, b
+0350: FE 18                 cpi  18h
+0352: DA 5A 03              jc   loc_035A
+0355: 3E 07                 mvi  a, 07h
+0357: 32 1E 00              sta  saboteur_y
+035A:               loc_035A:
+035A: 3A 28 00              lda  saboteur_dir
+035D: FE 01                 cpi  01h
+035F: C2 67 03              jnz  loc_0367
+0362: 3E 3C                 mvi  a, 3Ch
+0364: 32 19 00              sta  saboteur_x
+0367:               loc_0367:
+0367: 3A 29 00              lda  climber_active
+036A: FE 01                 cpi  01h
+036C: CA 9B 03              jz   loc_039B
+036F: CD 00 01              call rng_next
+0372: 78                    mov  a, b
+0373:               saboteur_spawn_rate:                    ; offset 0373h -- SMC: difficulty patches +1
+0373: FE 14                 cpi  14h                        ; higher value = less frequent climb attempts
+0375: DA 2E 04              jc   loc_042E                   ;   medium=14h, easy=16h, hard=12h
+0378: 3A 19 00              lda  saboteur_x
+037B: 47                    mov  b, a
+037C: 04                    inr  b
+037D: 0E 01                 mvi  c, 01h
+037F: CD BF 00              call xy_to_vaddr
+0382: 7E                    mov  a, m
+0383: FE 7F                 cpi  7Fh                         ; '█' (full block) -- ground tile detected
+0385: C2 2E 04              jnz  loc_042E
+0388: 3E 01                 mvi  a, 01h
+038A: 32 29 00              sta  climber_active
+038D: 3A 19 00              lda  saboteur_x
+0390: 3C                    inr  a
+0391: 32 1A 00              sta  climber_x
+0394: 3A 1E 00              lda  saboteur_y
+0397: 3D                    dcr  a
+0398: 32 1F 00              sta  climber_y
+039B:               loc_039B:
+039B: 3A 29 00              lda  climber_active
+039E: FE 01                 cpi  01h
+03A0: C2 2E 04              jnz  loc_042E
+03A3: 3A 25 00              lda  climber_timer
+03A6: 3D                    dcr  a
+03A7: 32 25 00              sta  climber_timer
+03AA: B7                    ora  a
+03AB: C2 2E 04              jnz  loc_042E
+03AE:               climber_timer_reload:                   ; offset 03AEh -- SMC: difficulty patches +1
+03AE: 3E 12                 mvi  a, 12h                     ; frames between climber row-steps
+03B0: 32 25 00              sta  climber_timer              ;   medium=12h, easy=1Ch, hard=0Fh
+03B3: 3A 1D 00              lda  player_y
+03B6: 47                    mov  b, a
+03B7: 3A 1F 00              lda  climber_y
+03BA: 3D                    dcr  a
+03BB: 32 1F 00              sta  climber_y
+03BE: B8                    cmp  b
+03BF: C2 FC 03              jnz  loc_03FC
+03C2: 3A 18 00              lda  player_x
+03C5: 47                    mov  b, a
+03C6: 3A 1A 00              lda  climber_x
+03C9: B8                    cmp  b
+03CA: DA FC 03              jc   loc_03FC
+03CD: 04                    inr  b
+03CE: 04                    inr  b
+03CF: 04                    inr  b
+03D0: B8                    cmp  b
+03D1: D2 FC 03              jnc  loc_03FC
+03D4: AF                    xra  a
+03D5: 32 29 00              sta  climber_active
+03D8: 21 05 00              lxi  h, 0005h
+03DB: 22 35 00              shld score_delta_lo
+03DE: CD 21 01              call score_add
+03E1: 3A 1A 00              lda  climber_x
+03E4: 47                    mov  b, a
+03E5: 3A 1F 00              lda  climber_y
+03E8: 3C                    inr  a
+03E9: 4F                    mov  c, a
+03EA: CD BF 00              call xy_to_vaddr
+03ED: 36 00                 mvi  m, 00h
+03EF: CD 93 01              call beep_sweep_up
+03F2: CD 52 00              call draw_score
+03F5: AF                    xra  a
+03F6: 32 1A 00              sta  climber_x
+03F9: C3 2E 04              jmp  loc_042E
+03FC:               loc_03FC:
+03FC: 3A 1A 00              lda  climber_x
+03FF: 47                    mov  b, a
+0400: 3A 1F 00              lda  climber_y
+0403: 3C                    inr  a
+0404: 4F                    mov  c, a
+0405: CD BF 00              call xy_to_vaddr
+0408: 36 00                 mvi  m, 00h
+040A: 0D                    dcr  c
+040B: CD BF 00              call xy_to_vaddr
+040E: 36 09                 mvi  m, 09h
+0410: 79                    mov  a, c
+0411: FE 01                 cpi  01h
+0413: C2 2E 04              jnz  loc_042E
+0416: 3A 2D 00              lda  diversants_landed
+0419: 3C                    inr  a
+041A: 27                    daa
+041B: 32 2D 00              sta  diversants_landed
+041E: CD 70 00              call draw_diversants_label
+0421: 3A 2D 00              lda  diversants_landed
+0424: CD 34 0A              call print_hex_or_rank
+0427: AF                    xra  a
+0428: 32 29 00              sta  climber_active
+042B: C3 31 04              jmp  loc_0431
+042E:               loc_042E:
+042E: C3 87 04              jmp  handle_input
+0431:               loc_0431:
+0431: 3A 2D 00              lda  diversants_landed
+0434: FE 10                 cpi  10h                         ; 16 landed diversants -> game over
+0436: C2 47 04              jnz  loc_0447
+0439: CD 89 00              call show_game_over
+043C:               loc_043C:
+043C: CD E4 01              call get_key
+043F: FE 0D                 cpi  0Dh                         ; CR (Enter) -- acknowledge game over
+0441: CA 2E 08              jz   hiscore_try
+0444: C3 3C 04              jmp  loc_043C
+0447:               loc_0447:
+0447: 3A 1A 00              lda  climber_x
+044A: 32 2E 00              sta  saved_climber_x
+044D: CD D8 01              call beep_kill
+0450: 47                    mov  b, a
+0451: 21 48 00              lxi  h, 0048h
+0454: 22 37 00              shld score_penalty_lo
+0457: CD 54 01              call score_sub
+045A: CD 52 00              call draw_score
+045D:               loc_045D:
+045D: 04                    inr  b
+045E: 0E 01                 mvi  c, 01h
+0460: CD BF 00              call xy_to_vaddr
+0463: 3E 7F                 mvi  a, 7Fh                      ; '█' (full block) -- ground tile
+0465: BE                    cmp  m
+0466: C2 6E 04              jnz  loc_046E
+0469: 36 00                 mvi  m, 00h
+046B: C3 5D 04              jmp  loc_045D
+046E:               loc_046E:
+046E: 3A 2E 00              lda  saved_climber_x
+0471: 47                    mov  b, a
+0472:               loc_0472:
+0472: AF                    xra  a
+0473: 32 1A 00              sta  climber_x
+0476: 05                    dcr  b
+0477: 0E 01                 mvi  c, 01h
+0479: CD BF 00              call xy_to_vaddr
+047C: 3E 7F                 mvi  a, 7Fh                      ; '█' (full block) -- ground tile
+047E: BE                    cmp  m
+047F: C2 87 04              jnz  handle_input
+0482: 36 00                 mvi  m, 00h
+0484: C3 72 04              jmp  loc_0472
+0487:               handle_input:
+0487: CD 03 00              call monitor_scan_kbd
+048A: FE 08                 cpi  08h                         ; ← cursor left / BS
+048C: CA C5 04              jz   move_left
+048F: FE 18                 cpi  18h                         ; → cursor right
+0491: CA F7 04              jz   move_right
+0494: FE 19                 cpi  19h                         ; ↑ cursor up
+0496: CA 29 05              jz   move_up
+0499: FE 1A                 cpi  1Ah                         ; ↓ cursor down
+049B: CA 5D 05              jz   move_down
+049E: FE 20                 cpi  20h                         ; ' ' SPACE -- fire
+04A0: CA B3 05              jz   fire_torpedo
+04A3: FE 0C                 cpi  0Ch                         ; 0Ch (home/FF) -- also fires
+04A5: CA B3 05              jz   fire_torpedo
+04A8: FE 03                 cpi  03h                         ; Ctrl-C -- exit to monitor
+04AA: CA 12 00              jz   monitor_prompt
+04AD: FE 1F                 cpi  1Fh                         ; clear-screen key -- hard restart
+04AF: CA 00 00              jz   loc_0000
+04B2: FE 1B                 cpi  1Bh                         ; 1Bh (АР2/ESC) -- pause
+04B4: CA BA 04              jz   pause_loop
+04B7: C3 DE 05              jmp  torpedo_tick
+04BA:               pause_loop:
+04BA: CD E4 01              call get_key
+04BD: FE 1B                 cpi  1Bh                         ; 1Bh (АР2/ESC) -- keep pausing
+04BF: CA BA 04              jz   pause_loop
+04C2: C3 87 04              jmp  handle_input
+04C5:               move_left:
+04C5: 3A 24 00              lda  kbd_debounce
+04C8: 3D                    dcr  a
+04C9: 32 24 00              sta  kbd_debounce
+04CC: B7                    ora  a
+04CD: C2 DE 05              jnz  torpedo_tick
+04D0:               move_left_debounce:                     ; offset 04D0h -- SMC: difficulty patches +1
+04D0: 3E 04                 mvi  a, 04h                     ; medium/easy=04h, hard=03h
+04D2: 32 24 00              sta  kbd_debounce
+04D5: 3A 18 00              lda  player_x
+04D8: FE 01                 cpi  01h
+04DA: DA DE 05              jc   torpedo_tick
+04DD: 3D                    dcr  a
+04DE: FB                    ei
+04DF: 47                    mov  b, a
+04E0: 32 18 00              sta  player_x
+04E3: 3A 1D 00              lda  player_y
+04E6: 4F                    mov  c, a
+04E7: F3                    di
+04E8: CD BF 00              call xy_to_vaddr
+04EB: CD ED 00              call clear_6_cells
+04EE: CD BF 00              call xy_to_vaddr
+04F1: CD DB 00              call draw_turret
+04F4: C3 8E 05              jmp  loc_058E
+04F7:               move_right:
+04F7: 3A 24 00              lda  kbd_debounce
+04FA: 3D                    dcr  a
+04FB: 32 24 00              sta  kbd_debounce
+04FE: B7                    ora  a
+04FF: C2 DE 05              jnz  torpedo_tick
+0502:               move_right_debounce:                    ; offset 0502h -- SMC: difficulty patches +1
+0502: 3E 04                 mvi  a, 04h                     ; medium/easy=04h, hard=03h
+0504: 32 24 00              sta  kbd_debounce
+0507: 3A 18 00              lda  player_x
+050A: FE 3A                 cpi  3Ah
+050C: D2 DE 05              jnc  torpedo_tick
+050F: 3C                    inr  a
+0510: FB                    ei
+0511: 47                    mov  b, a
+0512: 32 18 00              sta  player_x
+0515: 3A 1D 00              lda  player_y
+0518: 4F                    mov  c, a
+0519: F3                    di
+051A: CD BF 00              call xy_to_vaddr
+051D: CD ED 00              call clear_6_cells
+0520: CD BF 00              call xy_to_vaddr
+0523: CD DB 00              call draw_turret
+0526: C3 8E 05              jmp  loc_058E
+0529:               move_up:
+0529: 3A 24 00              lda  kbd_debounce
+052C: 3D                    dcr  a
+052D: 32 24 00              sta  kbd_debounce
+0530: B7                    ora  a
+0531: C2 DE 05              jnz  torpedo_tick
+0534:               move_up_debounce:                       ; offset 0534h -- SMC: difficulty patches +1
+0534: 3E 06                 mvi  a, 06h                     ; medium=06h, easy=05h, hard=04h
+0536: 32 24 00              sta  kbd_debounce
+0539: 3A 1D 00              lda  player_y
+053C: FE 17                 cpi  17h
+053E: D2 DE 05              jnc  torpedo_tick
+0541: 3C                    inr  a
+0542: 32 1D 00              sta  player_y
+0545: FB                    ei
+0546: 3D                    dcr  a
+0547: 4F                    mov  c, a
+0548: 3A 18 00              lda  player_x
+054B: 47                    mov  b, a
+054C: F3                    di
+054D: CD BF 00              call xy_to_vaddr
+0550: CD ED 00              call clear_6_cells
+0553: 0C                    inr  c
+0554: CD BF 00              call xy_to_vaddr
+0557: CD DB 00              call draw_turret
+055A: C3 8E 05              jmp  loc_058E
+055D:               move_down:
+055D: 3A 24 00              lda  kbd_debounce
+0560: 3D                    dcr  a
+0561: 32 24 00              sta  kbd_debounce
+0564: B7                    ora  a
+0565: C2 DE 05              jnz  torpedo_tick
+0568:               move_down_debounce:                     ; offset 0568h -- SMC: difficulty patches +1
+0568: 3E 06                 mvi  a, 06h                     ; medium=06h, easy=05h, hard=04h
+056A: 32 24 00              sta  kbd_debounce
+056D: 3A 1D 00              lda  player_y
+0570: FE 03                 cpi  03h
+0572: DA DE 05              jc   torpedo_tick
+0575: 3D                    dcr  a
+0576: 32 1D 00              sta  player_y
+0579: FB                    ei
+057A: 4F                    mov  c, a
+057B: 0C                    inr  c
+057C: 3A 18 00              lda  player_x
+057F: 47                    mov  b, a
+0580: F3                    di
+0581: CD BF 00              call xy_to_vaddr
+0584: CD ED 00              call clear_6_cells
+0587: 0D                    dcr  c
+0588: CD BF 00              call xy_to_vaddr
+058B: CD DB 00              call draw_turret
+058E:               loc_058E:
+058E: 3A 33 00              lda  autotarget_on
+0591: B7                    ora  a
+0592: CA DE 05              jz   torpedo_tick
+0595: 3A 32 00              lda  torpedo_active
+0598: B7                    ora  a
+0599: C2 DE 05              jnz  torpedo_tick
+059C: 3A 1A 00              lda  climber_x
+059F: 47                    mov  b, a
+05A0: 3A 18 00              lda  player_x
+05A3: 3C                    inr  a
+05A4: B8                    cmp  b
+05A5: C2 DE 05              jnz  torpedo_tick
+05A8: 3A 1F 00              lda  climber_y
+05AB: 47                    mov  b, a
+05AC: 3A 1D 00              lda  player_y
+05AF: B8                    cmp  b
+05B0: D2 DE 05              jnc  torpedo_tick
+05B3:               fire_torpedo:
+05B3: 3A 32 00              lda  torpedo_active
+05B6: FE 01                 cpi  01h
+05B8: CA E5 05              jz   loc_05E5
+05BB: 21 05 00              lxi  h, 0005h
+05BE: 22 37 00              shld score_penalty_lo
+05C1: CD 54 01              call score_sub
+05C4: CD 52 00              call draw_score
+05C7: 3E 01                 mvi  a, 01h
+05C9: 32 32 00              sta  torpedo_active
+05CC: 3A 18 00              lda  player_x
+05CF: 3C                    inr  a
+05D0: 32 1B 00              sta  torpedo_x
+05D3: 3A 1D 00              lda  player_y
+05D6: 32 20 00              sta  torpedo_y
+05D9: 3E 0A                 mvi  a, 0Ah
+05DB: 32 3B 00              sta  shoot_beep_freq
+05DE:               torpedo_tick:
+05DE: 3A 32 00              lda  torpedo_active
+05E1: B7                    ora  a
+05E2: CA D1 06              jz   ufo_tick
+05E5:               loc_05E5:
+05E5: 3A 26 00              lda  torpedo_timer
+05E8: 3D                    dcr  a
+05E9: 32 26 00              sta  torpedo_timer
+05EC: B7                    ora  a
+05ED: C2 D1 06              jnz  ufo_tick
+05F0:               torpedo_timer_reload:                   ; offset 05F0h -- SMC: difficulty patches +1
+05F0: 3E 04                 mvi  a, 04h                     ; medium/hard=04h, easy=03h
+05F2: 32 26 00              sta  torpedo_timer
+05F5: CD C6 01              call beep_shoot
+05F8: 3A 1B 00              lda  torpedo_x
+05FB: 47                    mov  b, a
+05FC: 3A 20 00              lda  torpedo_y
+05FF: 4F                    mov  c, a
+0600: CD BF 00              call xy_to_vaddr
+0603: 36 20                 mvi  m, 20h
+0605: 0C                    inr  c
+0606: CD BF 00              call xy_to_vaddr
+0609: 36 0B                 mvi  m, 0Bh
+060B: 79                    mov  a, c
+060C: 32 20 00              sta  torpedo_y
+060F: 3A 1E 00              lda  saboteur_y
+0612: B9                    cmp  c
+0613: C2 59 06              jnz  loc_0659
+0616: 3A 19 00              lda  saboteur_x
+0619: 04                    inr  b
+061A: B8                    cmp  b
+061B: D2 59 06              jnc  loc_0659
+061E: C6 04                 adi  04h
+0620: B8                    cmp  b
+0621: DA 59 06              jc   loc_0659
+0624: AF                    xra  a
+0625: 32 32 00              sta  torpedo_active
+0628: 32 22 00              sta  saboteur_active
+062B: 3C                    inr  a
+062C: 32 39 00              sta  ufo_active
+062F: 3E 08                 mvi  a, 08h
+0631: 32 3A 00              sta  ufo_anim_phase
+0634: 3A 19 00              lda  saboteur_x
+0637: 32 1C 00              sta  ufo_x
+063A: 2A 8E 07              lhld frame_delay + 1
+063D: 2B                    dcx  h
+063E: 2B                    dcx  h
+063F: 2B                    dcx  h
+0640: 2B                    dcx  h
+0641: 22 8E 07              shld frame_delay + 1
+0644: 3A 1E 00              lda  saboteur_y
+0647: 32 21 00              sta  ufo_y
+064A: 21 25 00              lxi  h, climber_timer
+064D: 22 35 00              shld score_delta_lo
+0650: CD 21 01              call score_add
+0653: CD 52 00              call draw_score
+0656: C3 D8 06              jmp  loc_06D8
+0659:               loc_0659:
+0659: 3A 1B 00              lda  torpedo_x
+065C: 47                    mov  b, a
+065D: 3A 1A 00              lda  climber_x
+0660: B8                    cmp  b
+0661: C2 BB 06              jnz  loc_06BB
+0664: 3A 20 00              lda  torpedo_y
+0667: 79                    mov  a, c
+0668: CD BF 00              call xy_to_vaddr
+066B: 11 B2 FF              lxi  d, 0FFB2h          ; two's-complement of 004Eh: hl -= 78 (one row up)
+066E: 19                    dad  d
+066F: 3E 09                 mvi  a, 09h              ; 09h = '✿' flower glyph (climber body)
+0671: BE                    cmp  m
+0672: CA 7A 06              jz   loc_067A
+0675: 19                    dad  d                   ; hl -= 78 again: two rows above
+0676: BE                    cmp  m
+0677: C2 BB 06              jnz  loc_06BB
+067A:               loc_067A:
+067A: CD BF 00              call xy_to_vaddr
+067D: 36 00                 mvi  m, 00h
+067F: 3A 1A 00              lda  climber_x
+0682: 47                    mov  b, a
+0683: 3A 1F 00              lda  climber_y
+0686: 4F                    mov  c, a
+0687: CD BF 00              call xy_to_vaddr
+068A: 36 2A                 mvi  m, 2Ah
+068C: CD 93 01              call beep_sweep_up
+068F: 36 00                 mvi  m, 00h
+0691: AF                    xra  a
+0692: 32 32 00              sta  torpedo_active
+0695: 32 29 00              sta  climber_active
+0698: 32 1A 00              sta  climber_x
+069B: 32 1F 00              sta  climber_y
+069E: 21 34 00              lxi  h, hit_counter
+06A1: 34                    inr  m
+06A2: 21 12 00              lxi  h, monitor_prompt
+06A5: 22 35 00              shld score_delta_lo
+06A8: CD 21 01              call score_add
+06AB: 3A 20 00              lda  torpedo_y
+06AE: 6F                    mov  l, a
+06AF: 22 35 00              shld score_delta_lo
+06B2: CD 21 01              call score_add
+06B5: CD 52 00              call draw_score
+06B8: C3 D1 06              jmp  ufo_tick
+06BB:               loc_06BB:
+06BB: 3A 20 00              lda  torpedo_y
+06BE: FE 18                 cpi  18h
+06C0: C2 D1 06              jnz  ufo_tick
+06C3: 4F                    mov  c, a
+06C4: 3A 1B 00              lda  torpedo_x
+06C7: 47                    mov  b, a
+06C8: CD BF 00              call xy_to_vaddr
+06CB: 36 00                 mvi  m, 00h
+06CD: AF                    xra  a
+06CE: 32 32 00              sta  torpedo_active
+06D1:               ufo_tick:
+06D1: 3A 39 00              lda  ufo_active
+06D4: B7                    ora  a
+06D5: CA 8D 07              jz   frame_delay
+06D8:               loc_06D8:
+06D8: 3A 27 00              lda  ufo_timer
+06DB: 3D                    dcr  a
+06DC: 32 27 00              sta  ufo_timer
+06DF: B7                    ora  a
+06E0: C2 8D 07              jnz  frame_delay
+06E3: 3E 0E                 mvi  a, 0Eh
+06E5: 32 27 00              sta  ufo_timer
+06E8: 3A 3A 00              lda  ufo_anim_phase
+06EB: 3D                    dcr  a
+06EC: FB                    ei
+06ED: F3                    di
+06EE: 32 3A 00              sta  ufo_anim_phase
+06F1: B7                    ora  a
+06F2: FB                    ei
+06F3: F3                    di
+06F4: C2 0F 07              jnz  loc_070F
+06F7: FB                    ei
+06F8: 3A 1C 00              lda  ufo_x
+06FB: 47                    mov  b, a
+06FC: 05                    dcr  b
+06FD: 3A 21 00              lda  ufo_y
+0700: 4F                    mov  c, a
+0701: F3                    di
+0702: CD BF 00              call xy_to_vaddr
+0705: CD ED 00              call clear_6_cells
+0708: AF                    xra  a
+0709: 32 39 00              sta  ufo_active
+070C: C3 8D 07              jmp  frame_delay
+070F:               loc_070F:
+070F: 3A 1C 00              lda  ufo_x
+0712: 47                    mov  b, a
+0713: FB                    ei
+0714: 3A 21 00              lda  ufo_y
+0717: 4F                    mov  c, a
+0718: CD BF 00              call xy_to_vaddr
+071B: CD ED 00              call clear_6_cells
+071E: CD BF 00              call xy_to_vaddr
+0721: F3                    di
+0722: 3A 3A 00              lda  ufo_anim_phase
+0725: FE 01                 cpi  01h
+0727: CA 85 07              jz   loc_0785
+072A: FE 02                 cpi  02h
+072C: CA 7A 07              jz   loc_077A
+072F: FE 03                 cpi  03h
+0731: CA 6F 07              jz   loc_076F
+0734: FE 04                 cpi  04h
+0736: CA 64 07              jz   loc_0764
+0739: FE 05                 cpi  05h
+073B: CA 59 07              jz   loc_0759
+073E: FE 06                 cpi  06h
+0740: CA 4E 07              jz   loc_074E
+0743: 36 10                 mvi  m, 10h
+0745: 23                    inx  h
+0746: 36 10                 mvi  m, 10h
+0748: 23                    inx  h
+0749: 36 10                 mvi  m, 10h
+074B: C3 8D 07              jmp  frame_delay
+074E:               loc_074E:
+074E: 36 02                 mvi  m, 02h
+0750: 23                    inx  h
+0751: 36 02                 mvi  m, 02h
+0753: 23                    inx  h
+0754: 36 00                 mvi  m, 00h
+0756: C3 8D 07              jmp  frame_delay
+0759:               loc_0759:
+0759: 36 10                 mvi  m, 10h
+075B: 23                    inx  h
+075C: 36 00                 mvi  m, 00h
+075E: 23                    inx  h
+075F: 36 10                 mvi  m, 10h
+0761: C3 8D 07              jmp  frame_delay
+0764:               loc_0764:
+0764: 36 2B                 mvi  m, 2Bh
+0766: 23                    inx  h
+0767: 36 2B                 mvi  m, 2Bh
+0769: 23                    inx  h
+076A: 36 2B                 mvi  m, 2Bh
+076C: C3 8D 07              jmp  frame_delay
+076F:               loc_076F:
+076F: 36 2D                 mvi  m, 2Dh
+0771: 23                    inx  h
+0772: 36 2D                 mvi  m, 2Dh
+0774: 23                    inx  h
+0775: 36 2D                 mvi  m, 2Dh
+0777: C3 8D 07              jmp  frame_delay
+077A:               loc_077A:
+077A: 36 09                 mvi  m, 09h
+077C: 23                    inx  h
+077D: 36 09                 mvi  m, 09h
+077F: 23                    inx  h
+0780: 36 09                 mvi  m, 09h
+0782: C3 8D 07              jmp  frame_delay
+0785:               loc_0785:
+0785: 36 00                 mvi  m, 00h
+0787: 23                    inx  h
+0788: 36 2B                 mvi  m, 2Bh
+078A: 23                    inx  h
+078B: 36 00                 mvi  m, 00h
+                    ; ---- Frame-delay loop with a self-modifying count ----
+                    ; The `lxi h, 0200h` below is the SMC site: the 16-bit immediate at
+                    ; 078E/078Fh is the current loop count. Reads/writes of the count
+                    ; are done via `lhld/shld frame_delay + 1` elsewhere -- they are
+                    ; literally overwriting the immediate bytes in this instruction.
+                    ;   difficulty_easy   -> 0250h (slow, long delay)
+                    ;   difficulty_medium -> 0200h
+                    ;   difficulty_hard   -> 0160h (fast, short delay)
+                    ;   autotarget reward -> 01A0h (faster than the default)
+                    ;   auto-clamp below 0Ah -> 0050h (keeps the game playable)
+078D:               frame_delay:                            ; offset 078Dh
+078D: 21 00 02              lxi  h, 0200h                   ; self-modified immediate at 078E/078Fh
+0790:               loc_0790:
+0790: 2B                    dcx  h
+0791: 7D                    mov  a, l
+0792: B4                    ora  h
+0793: C2 90 07              jnz  loc_0790
+0796: 2A 8E 07              lhld frame_delay + 1
+0799: 7C                    mov  a, h
+079A: B7                    ora  a
+079B: C2 AA 07              jnz  check_autotarget_award
+079E: 7D                    mov  a, l
+079F: FE 0A                 cpi  0Ah
+07A1: D2 AA 07              jnc  check_autotarget_award
+07A4: 21 50 00              lxi  h, 0050h
+07A7: 22 8E 07              shld frame_delay + 1
+07AA:               check_autotarget_award:
+07AA: 3A 33 00              lda  autotarget_on
+07AD: B7                    ora  a
+07AE: C2 B7 02              jnz  game_loop
+07B1: 3A 34 00              lda  hit_counter
+07B4: FE 32                 cpi  32h
+07B6: C2 B7 02              jnz  game_loop
+07B9: 21 A0 01              lxi  h, 01A0h
+07BC: 22 8E 07              shld frame_delay + 1
+07BF: 3E 0F                 mvi  a, 0Fh
+07C1:               loc_07C1:
+07C1: CD 93 01              call beep_sweep_up
+07C4: 3D                    dcr  a
+07C5: B7                    ora  a
+07C6: C2 C1 07              jnz  loc_07C1
+07C9: 21 F3 07              lxi  h, str_autotarget_awarded
+07CC: CD 09 00              call monitor_puts
+07CF: 11 15 08              lxi  d, str_autotarget_awarded_2              ; 0815h -- second NUL-term string
+07D2: 21 76 77              lxi  h, video_memory + 2*video_stride + 10    ; 7776h -- row 2, col 10 (second banner line)
+07D5: CD 89 01              call str_copy_until_nul
+07D8: CD E4 01              call get_key
+07DB: 21 29 08              lxi  h, str_cursor_home_row
+07DE: CD 09 00              call monitor_puts
+07E1: 3E 1F                 mvi  a, 1Fh
+07E3: 0E 00                 mvi  c, 00h
+07E5:               loc_07E5:
+07E5: CD 06 00              call monitor_putc
+07E8: 3D                    dcr  a
+07E9: C2 E5 07              jnz  loc_07E5
+07EC: 21 33 00              lxi  h, autotarget_on
+07EF: 34                    inr  m
+07F0: C3 B7 02              jmp  game_loop
+                    ; Two back-to-back NUL-terminated strings. monitor_puts prints just
+                    ; the first (up to and including its ESC-Y cursor-positioning header);
+                    ; the caller then uses str_copy_until_nul on str_autotarget_awarded_2
+                    ; to poke the second line straight into video RAM at row 2, col 10.
+07F3:               str_autotarget_awarded:                 ; offset 07F3h
+07F3: 1B 59 20 31           db   1Bh, 'Y', 20h, 31h       ; ESC Y row=0 col=17
+07F7: 77 79 20 70           db   'wy premirowany awtonawod~ikom', 00h     ; "ВЫ ПРЕМИРОВАНЫ АВТОНАВОДЧИКОМ"
+07FB: 72 65 6D 69
+07FF: 72 6F 77 61
+0803: 6E 79 20 61
+0807: 77 74 6F 6E
+080B: 61 77 6F 64
+080F: 7E 69 6B 6F
+0813: 6D 00
+0815:               str_autotarget_awarded_2:               ; offset 0815h -- second line, no ESC-Y
+0815: 73 69 73 74           db   'sistema awtonawodki', 00h                ; "СИСТЕМА АВТОНАВОДКИ"
+0819: 65 6D 61 20
+081D: 61 77 74 6F
+0821: 6E 61 77 6F
+0825: 64 6B 69 00
+0829:               str_cursor_home_row:                    ; offset 0829h
+0829: 1B 59 20 31           db   1Bh, 'Y', 20h, 31h       ; ESC Y row=0 col=17
+082D: 00                    db   '', 00h                  ; "" -- (cursor only)
+082E:               hiscore_try:
+082E: 3A 2F 00              lda  score_positive
+0831: B7                    ora  a
+0832: CA B8 08              jz   loc_08B8
+0835: AF                    xra  a
+0836: 32 D8 09              sta  hiscore_idx
+0839:               loc_0839:
+0839: CD BE 09              call hiscore_entry_addr
+083C: 11 0E 00              lxi  d, 000Eh
+083F: 19                    dad  d
+0840: 56                    mov  d, m
+0841: 23                    inx  h
+0842: 5E                    mov  e, m
+0843: 2A 2B 00              lhld score_lo
+0846: 7C                    mov  a, h
+0847: BA                    cmp  d
+0848: DA A9 08              jc   loc_08A9
+084B: C2 53 08              jnz  loc_0853
+084E: 7B                    mov  a, e
+084F: BD                    cmp  l
+0850: D2 A9 08              jnc  loc_08A9
+0853:               loc_0853:
+0853: CD BE 09              call hiscore_entry_addr
+0856: 22 D9 09              shld hiscore_slot_ptr
+0859: CD 1F 09              call hiscore_shift_down
+085C: 2A D9 09              lhld hiscore_slot_ptr
+085F: CD 5D 09              call hiscore_read_name
+0862: 2A D9 09              lhld hiscore_slot_ptr
+0865: 11 0E 00              lxi  d, 000Eh
+0868: 19                    dad  d
+0869: 11 2C 00              lxi  d, score_hi
+086C: 1A                    ldax d
+086D: 77                    mov  m, a
+086E: 1B                    dcx  d
+086F: 23                    inx  h
+0870: 1A                    ldax d
+0871: 77                    mov  m, a
+0872:               loc_0872:
+0872: CD DB 09              call hiscore_show_table
+0875: 3A D8 09              lda  hiscore_idx
+0878: FE 14                 cpi  14h
+087A: CA C0 08              jz   loc_08C0
+087D: FE 15                 cpi  15h
+087F: CA D4 08              jz   loc_08D4
+0882: 3A D8 09              lda  hiscore_idx
+0885: 47                    mov  b, a
+0886: 21 F6 77              lxi  h, video_memory + 3*video_stride + 60    ; 77F6h -- row 3, col 60 (rightmost of game area)
+0889: 11 4E 00              lxi  d, video_stride     ; 004Eh -- bytes per row
+088C:               loc_088C:
+088C: 78                    mov  a, b
+088D: B7                    ora  a
+088E: CA 96 08              jz   loc_0896
+0891: 19                    dad  d                   ; step down one row per hiscore rank
+0892: 05                    dcr  b
+0893: C3 8C 08              jmp  loc_088C
+0896:               loc_0896:
+0896: 36 80                 mvi  m, 80h              ; inverse of 00h (blank) -- marker on rank row
+0898: 11 DB FF              lxi  d, 0FFDBh          ; two's-complement of 0025h: hl -= 37
+089B: 19                    dad  d
+089C: 36 82                 mvi  m, 82h              ; inverse of 02h (▝ top-right quadrant) -- arrow
+089E:               loc_089E:
+089E: 21 05 76              lxi  h, 7605h            ; monitor var pressed_key (7605h)
+08A1: 36 00                 mvi  m, 00h              ; clear "key held" state before reading keys
+08A3: CD E4 01              call get_key
+08A6: C3 9F 0C              jmp  show_menu
+08A9:               loc_08A9:
+08A9: 3A D8 09              lda  hiscore_idx
+08AC: 3C                    inr  a
+08AD: 32 D8 09              sta  hiscore_idx
+08B0: FE 14                 cpi  14h
+08B2: C2 39 08              jnz  loc_0839
+08B5: C3 72 08              jmp  loc_0872
+08B8:               loc_08B8:
+08B8: 3E 15                 mvi  a, 15h
+08BA: 32 D8 09              sta  hiscore_idx
+08BD: C3 72 08              jmp  loc_0872
+08C0:               loc_08C0:
+08C0: 21 EA 08              lxi  h, str_your_result
+08C3: CD 09 00              call monitor_puts
+08C6: 2A 2B 00              lhld score_lo
+08C9: 7C                    mov  a, h
+08CA: CD 0C 00              call monitor_hexb
+08CD: 7D                    mov  a, l
+08CE: CD 0C 00              call monitor_hexb
+08D1: C3 9E 08              jmp  loc_089E
+08D4:               loc_08D4:
+08D4: 21 FF 08              lxi  h, str_you_owe
+08D7: CD 09 00              call monitor_puts
+08DA: 2A 2B 00              lhld score_lo
+08DD: 7C                    mov  a, h
+08DE: 2F                    cma
+08DF: CD 0C 00              call monitor_hexb
+08E2: 7D                    mov  a, l
+08E3: 2F                    cma
+08E4: CD 0C 00              call monitor_hexb
+08E7: C3 9E 08              jmp  loc_089E
+08EA:               str_your_result:                        ; offset 08EAh
+08EA: 1B 59 37 36           db   1Bh, 'Y', 37h, 36h       ; ESC Y row=23 col=22
+08EE: 77 61 7B 20           db   'wa{ rezulxtat : ', 00h                  ; "VASH REZULSOFTTAT :" -- your result :
+08F2: 72 65 7A 75
+08F6: 6C 78 74 61
+08FA: 74 20 3A 20
+08FE: 00
+08FF:               str_you_owe:                            ; offset 08FFh
+08FF: 1B 59 37 31           db   1Bh, 'Y', 37h, 31h       ; ESC Y row=23 col=17
+0903: 77 79 20 7A           db   'wy zadolvali gosudarstwu : ', 00h       ; "VY ZADOLZHALI GOSUDARSTVU :" -- you owe the state :
+0907: 61 64 6F 6C
+090B: 76 61 6C 69
+090F: 20 67 6F 73
+0913: 75 64 61 72
+0917: 73 74 77 75
+091B: 20 3A 20 00
+091F:               hiscore_shift_down:
+091F: C5                    push b
+0920: D5                    push d
+0921: E5                    push h
+0922: 2A D9 09              lhld hiscore_slot_ptr
+0925: E5                    push h
+0926: C1                    pop  b
+0927: 0B                    dcx  b
+0928: 21 D6 0B              lxi  h, 0BD6h
+092B: 11 10 00              lxi  d, 0010h
+092E: 19                    dad  d
+092F: EB                    xchg
+0930: 21 D6 0B              lxi  h, 0BD6h
+0933:               loc_0933:
+0933: 7E                    mov  a, m
+0934: 12                    stax d
+0935: 1B                    dcx  d
+0936: 2B                    dcx  h
+0937: 7C                    mov  a, h
+0938: B8                    cmp  b
+0939: C2 33 09              jnz  loc_0933
+093C: 7D                    mov  a, l
+093D: B9                    cmp  c
+093E: C2 33 09              jnz  loc_0933
+0941: E1                    pop  h
+0942: D1                    pop  d
+0943: C1                    pop  b
+0944: C9                    ret
+0945:               str_enter_name:                           ; offset 0945h
+0945: 1B 59 37 36           db   1Bh, 'Y', 37h, 36h           ; ESC Y row=23 col=22
+0949: 77 77 65 64           db   'wwedite wa{e imq : ', 00h   ; "VVEDITE VASHE IMYA :" -- enter your name :
+094D: 69 74 65 20
+0951: 77 61 7B 65
+0955: 20 69 6D 71
+0959: 20 3A 20 00
+095D:               hiscore_read_name:
+095D: C5                    push b
+095E: E5                    push h
+095F: 21 05 76              lxi  h, 7605h            ; monitor var pressed_key (7605h)
+0962: 36 00                 mvi  m, 00h              ; clear "key held" state before reading keys
+0964: CD E8 09              call clear_display
+0967: 21 45 09              lxi  h, str_enter_name
+096A: CD 09 00              call monitor_puts
+096D: E1                    pop  h
+096E: AF                    xra  a
+096F: 47                    mov  b, a
+0970:               loc_0970:
+0970: CD E4 01              call get_key
+0973: 77                    mov  m, a
+0974: FE 0D                 cpi  0Dh                         ; CR (Enter) -- finished typing name
+0976: CA B7 09              jz   loc_09B7
+0979: FE 08                 cpi  08h                         ; BS (←) -- erase previous char
+097B: CA A1 09              jz   loc_09A1
+097E: FE 20                 cpi  20h                         ; ' ' -- ignore anything below space
+0980: DA 70 09              jc   loc_0970
+0983: 4F                    mov  c, a
+0984: CD 06 00              call monitor_putc
+0987: 23                    inx  h
+0988: 04                    inr  b
+0989: 78                    mov  a, b
+098A: FE 0D                 cpi  0Dh                         ; name-length cap (13 chars)
+098C: DA 70 09              jc   loc_0970
+098F: E5                    push h
+0990: 21 9C 09              lxi  h, str_bel_erase
+0993: CD 09 00              call monitor_puts
+0996: E1                    pop  h
+0997: 2B                    dcx  h
+0998: 05                    dcr  b
+0999: C3 70 09              jmp  loc_0970
+099C:               str_bel_erase:                          ; offset 099Ch
+099C: 07 08 20 08           db   07h, 08h, ' ', 08h, 00h    ; BEL, BS, " ", BS -- beep then erase-prev-char
+09A0: 00
+09A1:               loc_09A1:
+09A1: 78                    mov  a, b
+09A2: B7                    ora  a
+09A3: CA 70 09              jz   loc_0970
+09A6: E5                    push h
+09A7: 21 B3 09              lxi  h, str_erase_prev
+09AA: CD 09 00              call monitor_puts
+09AD: E1                    pop  h
+09AE: 2B                    dcx  h
+09AF: 05                    dcr  b
+09B0: C3 70 09              jmp  loc_0970
+09B3:               str_erase_prev:                         ; offset 09B3h
+09B3: 08 20 08 00           db   08h, ' ', 08h, 00h    ; BS, " ", BS -- erase-prev-char
+09B7:               loc_09B7:
+09B7: 78                    mov  a, b
+09B8: B7                    ora  a
+09B9: CA 70 09              jz   loc_0970
+09BC: C1                    pop  b
+09BD: C9                    ret
+09BE:               hiscore_entry_addr:
+09BE: C5                    push b
+09BF: D5                    push d
+09C0: 21 A6 0A              lxi  h, hiscore_table
+09C3: 11 10 00              lxi  d, 0010h
+09C6: 3A D8 09              lda  hiscore_idx
+09C9: 47                    mov  b, a
+09CA:               loc_09CA:
+09CA: 78                    mov  a, b
+09CB: B7                    ora  a
+09CC: CA D4 09              jz   loc_09D4
+09CF: 19                    dad  d
+09D0: 05                    dcr  b
+09D1: C3 CA 09              jmp  loc_09CA
+09D4:               loc_09D4:
+09D4: D1                    pop  d
+09D5: C1                    pop  b
+09D6: C9                    ret
+                    ; ---- scratch variables for the hiscore screen (uninitialized) ----
+09D7:               hiscore_rank:                           ; offset hiscore_rank -- BCD, rank being printed
+09D7: 0C                    db   0Ch
+09D8:               hiscore_idx:                            ; offset hiscore_idx -- current entry index 0..19
+09D8: 00                    db   00h
+09D9:               hiscore_slot_ptr:                       ; offset hiscore_slot_ptr (word) -- saved entry addr
+09D9: 0C 00                 db   0Ch, 00h
+09DB:               hiscore_show_table:
+09DB: 06 00                 mvi  b, 00h
+09DD: 3E 01                 mvi  a, 01h
+09DF: 32 D7 09              sta  hiscore_rank
+09E2: CD E8 09              call clear_display
+09E5: C3 0A 0A              jmp  hiscore_print_rows
+09E8:               clear_display:
+09E8: 21 C0 77              lxi  h, video_memory + 3*video_stride + 6     ; 77C0h -- row 3, col 6 (2 cells before text win)
+09EB:               loc_09EB:
+09EB: 36 00                 mvi  m, 00h              ; fill with blanks (renders as empty cell)
+09ED: 23                    inx  h
+09EE: 7C                    mov  a, h
+09EF: FE 80                 cpi  80h                 ; stop when H = 80h (past end of video RAM 7FF4h)
+09F1: C2 EB 09              jnz  loc_09EB
+09F4: 0E 0C                 mvi  c, 0Ch
+09F6: CD 06 00              call monitor_putc
+09F9: C9                    ret
+09FA:               put_12_nulls:
+09FA: C5                    push b
+09FB: 06 0C                 mvi  b, 0Ch
+09FD:               loc_09FD:
+09FD: 05                    dcr  b
+09FE: 0E 00                 mvi  c, 00h
+0A00: CD 06 00              call monitor_putc
+0A03: 78                    mov  a, b
+0A04: B7                    ora  a
+0A05: C2 FD 09              jnz  loc_09FD
+0A08: C1                    pop  b
+0A09: C9                    ret
+0A0A:               hiscore_print_rows:
+0A0A: CD FA 09              call put_12_nulls
+0A0D: 3A D7 09              lda  hiscore_rank
+0A10: CD 34 0A              call print_hex_or_rank
+0A13: 0E 00                 mvi  c, 00h
+0A15: CD 06 00              call monitor_putc
+0A18: CD 06 00              call monitor_putc
+0A1B: CD 06 00              call monitor_putc
+0A1E: CD 52 0A              call hiscore_row_addr
+0A21: CD 65 0A              call hiscore_print_row
+0A24: 04                    inr  b
+0A25: 3A D7 09              lda  hiscore_rank
+0A28: 3C                    inr  a
+0A29: 27                    daa
+0A2A: 32 D7 09              sta  hiscore_rank
+0A2D: 78                    mov  a, b
+0A2E: FE 14                 cpi  14h
+0A30: C2 0A 0A              jnz  hiscore_print_rows
+0A33: C9                    ret
+0A34:               print_hex_or_rank:
+0A34: C5                    push b
+0A35: F5                    push psw
+0A36: E6 F0                 ani  0F0h
+0A38: CA 42 0A              jz   loc_0A42
+0A3B: F1                    pop  psw
+0A3C: CD 0C 00              call monitor_hexb
+0A3F: C3 50 0A              jmp  loc_0A50
+0A42:               loc_0A42:
+0A42: 0E 20                 mvi  c, 20h
+0A44: CD 06 00              call monitor_putc
+0A47: F1                    pop  psw
+0A48: E6 0F                 ani  0Fh
+0A4A: F6 30                 ori  30h
+0A4C: 4F                    mov  c, a
+0A4D: CD 06 00              call monitor_putc
+0A50:               loc_0A50:
+0A50: C1                    pop  b
+0A51: C9                    ret
+0A52:               hiscore_row_addr:
+0A52: C5                    push b
+0A53: 78                    mov  a, b
+0A54: 21 A6 0A              lxi  h, hiscore_table
+0A57: 11 10 00              lxi  d, 0010h
+0A5A:               loc_0A5A:
+0A5A: B7                    ora  a
+0A5B: CA 63 0A              jz   loc_0A63
+0A5E: 19                    dad  d
+0A5F: 3D                    dcr  a
+0A60: C3 5A 0A              jmp  loc_0A5A
+0A63:               loc_0A63:
+0A63: C1                    pop  b
+0A64: C9                    ret
+0A65:               hiscore_print_row:
+0A65: C5                    push b
+0A66: E5                    push h
+0A67: 16 1E                 mvi  d, 1Eh
+0A69:               loc_0A69:
+0A69: 7E                    mov  a, m
+0A6A: FE 0D                 cpi  0Dh
+0A6C: CA 7E 0A              jz   loc_0A7E
+0A6F: 4F                    mov  c, a
+0A70: CD 06 00              call monitor_putc
+0A73: 0E 00                 mvi  c, 00h
+0A75: CD 06 00              call monitor_putc
+0A78: 23                    inx  h
+0A79: 15                    dcr  d
+0A7A: 15                    dcr  d
+0A7B: C3 69 0A              jmp  loc_0A69
+0A7E:               loc_0A7E:
+0A7E: 7A                    mov  a, d
+0A7F: B7                    ora  a
+0A80: CA 8C 0A              jz   loc_0A8C
+0A83: 0E 2E                 mvi  c, 2Eh
+0A85: CD 06 00              call monitor_putc
+0A88: 15                    dcr  d
+0A89: C3 7E 0A              jmp  loc_0A7E
+0A8C:               loc_0A8C:
+0A8C: E1                    pop  h
+0A8D: 11 0E 00              lxi  d, 000Eh
+0A90: 19                    dad  d
+0A91: 7E                    mov  a, m
+0A92: CD 0C 00              call monitor_hexb
+0A95: 23                    inx  h
+0A96: 7E                    mov  a, m
+0A97: CD 0C 00              call monitor_hexb
+0A9A: 0E 0D                 mvi  c, 0Dh
+0A9C: CD 06 00              call monitor_putc
+0A9F: 0E 0A                 mvi  c, 0Ah
+0AA1: CD 06 00              call monitor_putc
+0AA4: C1                    pop  b
+0AA5: C9                    ret
+                    ; ---- default hiscore table (20 × 16 bytes) ----
+                    ; Each slot: name in KOI-7 N2 (Cyrillic at 60h..7Fh) terminated by
+                    ; CR (0Dh) and padded with spaces to byte 13, then two BCD bytes:
+                    ; byte 14 = score hi-pair, byte 15 = score lo-pair ("32 24" -> 3224).
+                    ; This is the factory default; in-game wins overwrite it in RAM
+                    ; (memory-resident only — the game is not tape-saving scores).
+0AA6:               hiscore_table:                          ; offset 0AA6h
+0AA6: 60 72 69 6B           db   60h, 72h, 69h, 6Bh, 20h, 6Dh, 68h, 2Dh, 31h, 32h, 0Dh, 00h, 00h, 00h, 32h, 24h  ; "ЮРИК МХ-12"     3224
+0AAA: 20 6D 68 2D
+0AAE: 31 32 0D 00
+0AB2: 00 00 32 24
+0AB6: 77 69 74 61           db   77h, 69h, 74h, 61h, 6Ch, 69h, 6Bh, 0Dh, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 54h  ; "ВИТАЛИК"        0054
+0ABA: 6C 69 6B 0D
+0ABE: 20 20 20 20
+0AC2: 20 20 20 54
+0AC6: 77 61 64 69           db   77h, 61h, 64h, 69h, 6Bh, 0Dh, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 19h, 83h  ; "ВАДИК"          1983
+0ACA: 6B 0D 20 20
+0ACE: 20 20 20 20
+0AD2: 20 20 19 83
+0AD6: 4A 49 4D 4D           db   4Ah, 49h, 4Dh, 4Dh, 45h, 45h, 20h, 4Dh, 49h, 4Ch, 0Dh, 20h, 20h, 20h, 12h, 34h  ; "JIMMEE MIL"     1234
+0ADA: 45 45 20 4D
+0ADE: 49 4C 0D 20
+0AE2: 20 20 12 34
+0AE6: 6F 6C 65 6E           db   6Fh, 6Ch, 65h, 6Eh, 78h, 6Bh, 61h, 0Dh, 20h, 20h, 20h, 20h, 20h, 20h, 10h, 94h  ; "ОЛЕНЬКА"        1094
+0AEA: 78 6B 61 0D
+0AEE: 20 20 20 20
+0AF2: 20 20 10 94
+0AF6: 7B 75 72 69           db   7Bh, 75h, 72h, 69h, 6Bh, 0Dh, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 10h, 46h  ; "ШУРИК"          1046
+0AFA: 6B 0D 20 20
+0AFE: 20 20 20 20
+0B02: 20 20 10 46
+0B06: 73 65 72 79           db   73h, 65h, 72h, 79h, 6Ah, 0Dh, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 09h, 55h  ; "СЕРЫЙ"          0955
+0B0A: 6A 0D 20 20
+0B0E: 20 20 20 20
+0B12: 20 20 09 55
+0B16: 4D 41 55 53           db   4Dh, 41h, 55h, 53h, 45h, 20h, 4Dh, 49h, 4Bh, 0Dh, 20h, 20h, 20h, 20h, 08h, 85h  ; "MAUSE MIK"      0885
+0B1A: 45 20 4D 49
+0B1E: 4B 0D 20 20
+0B22: 20 20 08 85
+0B26: 41 50 50 4C           db   41h, 50h, 50h, 4Ch, 45h, 0Dh, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 06h, 47h  ; "APPLE"          0647
+0B2A: 45 0D 20 20
+0B2E: 20 20 20 20
+0B32: 20 20 06 47
+0B36: 61 67 2E 30           db   61h, 67h, 2Eh, 30h, 30h, 37h, 0Dh, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 05h, 36h  ; "АГ.007"         0536
+0B3A: 30 37 0D 20
+0B3E: 20 20 20 20
+0B42: 20 20 05 36
+0B46: 77 6F 6C 6B           db   77h, 6Fh, 6Ch, 6Bh, 0Dh, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 04h, 24h  ; "ВОЛК"           0424
+0B4A: 0D 20 20 20
+0B4E: 20 20 20 20
+0B52: 20 20 04 24
+0B56: 6C 65 6F 70           db   6Ch, 65h, 6Fh, 70h, 6Fh, 6Ch, 78h, 64h, 0Dh, 20h, 20h, 20h, 20h, 20h, 03h, 23h  ; "ЛЕОПОЛЬД"       0323
+0B5A: 6F 6C 78 64
+0B5E: 0D 20 20 20
+0B62: 20 20 03 23
+0B66: 62 61 7A 69           db   62h, 61h, 7Ah, 69h, 6Ch, 69h, 6Fh, 0Dh, 20h, 20h, 20h, 20h, 20h, 20h, 02h, 57h  ; "БАЗИЛИО"        0257
+0B6A: 6C 69 6F 0D
+0B6E: 20 20 20 20
+0B72: 20 20 02 57
+0B76: 77 65 73 65           db   77h, 65h, 73h, 65h, 6Ch, 78h, 7Eh, 61h, 6Bh, 0Dh, 20h, 20h, 20h, 20h, 02h, 31h  ; "ВЕСЕЛЬЧАК"      0231
+0B7A: 6C 78 7E 61
+0B7E: 6B 0D 20 20
+0B82: 20 20 02 31
+0B86: 70 6F 72 6F           db   70h, 6Fh, 72h, 6Fh, 73h, 65h, 6Eh, 6Fh, 6Bh, 0Dh, 20h, 20h, 20h, 20h, 02h, 03h  ; "ПОРОСЕНОК"      0203
+0B8A: 73 65 6E 6F
+0B8E: 6B 0D 20 20
+0B92: 20 20 02 03
+0B96: 4B 41 4C 44           db   4Bh, 41h, 4Ch, 44h, 52h, 4Fh, 4Fh, 4Eh, 0Dh, 20h, 20h, 20h, 20h, 20h, 01h, 23h  ; "KALDROON"       0123
+0B9A: 52 4F 4F 4E
+0B9E: 0D 20 20 20
+0BA2: 20 20 01 23
+0BA6: 61 6A 62 6F           db   61h, 6Ah, 62h, 6Fh, 6Ch, 69h, 74h, 0Dh, 20h, 20h, 20h, 20h, 20h, 20h, 00h, 76h  ; "АЙБОЛИТ"        0076
+0BAA: 6C 69 74 0D
+0BAE: 20 20 20 20
+0BB2: 20 20 00 76
+0BB6: 6B 61 72 6C           db   6Bh, 61h, 72h, 6Ch, 73h, 6Fh, 6Eh, 0Dh, 20h, 20h, 20h, 20h, 20h, 20h, 00h, 12h  ; "КАРЛСОН"        0012
+0BBA: 73 6F 6E 0D
+0BBE: 20 20 20 20
+0BC2: 20 20 00 12
+0BC6: 4D 58 2D 31           db   4Dh, 58h, 2Dh, 31h, 32h, 0Dh, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 00h, 00h  ; "MX-12"          0000
+0BCA: 32 0D 20 20
+0BCE: 20 20 20 20
+0BD2: 20 20 00 00
+0BD6: 4D 58 2D 31           db   4Dh, 58h, 2Dh, 31h, 32h, 0Dh, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 20h, 00h, 00h  ; "MX-12"          0000
+0BDA: 32 0D 20 20
+0BDE: 20 20 20 20
+0BE2: 20 20 00 00
+                    ; Trailing filler to the next 16-byte boundary (disassembles as
+                    ; fragmentary code ending in a truncated 3-byte jz, so not reachable).
+0BE6: 00 00 00 00           db   00h, 00h, 00h, 00h, 0Ch, 0C8h, 0FEh, 2Bh, 0CAh, 0F6h                            ; 0BE6h: dead filler
+0BEA: 0C C8 FE 2B
+0BEE: CA F6
+0BF0:               main:
+0BF0: CD B7 12              call cold_init
+0BF3: CD 03 F8              call rom_getc
+0BF6: CD FF 0B              call intro_anim
+0BF9: CD 2D F8              call rom_video
+0BFC: C3 9F 0C              jmp  show_menu
+0BFF:               intro_anim:
+0BFF: 21 C2 77              lxi  h, game_area_tl                ; 77C2h -- row 3, col 8  (game area top-left)
+0C02: 22 96 0C              shld intro_left_bot
+0C05: 22 9A 0C              shld intro_left_top
+0C08: 21 01 78              lxi  h, video_memory + 3*video_stride + 71    ; 7801h -- row 3, col 71 (game area top-right)
+0C0B: 22 98 0C              shld intro_right_bot
+0C0E: 22 9C 0C              shld intro_right_top
+0C11: 3E 1E                 mvi  a, 1Eh
+0C13: 32 9E 0C              sta  intro_beep_freq
+0C16: 06 21                 mvi  b, 21h
+0C18:               loc_0C18:
+0C18: 0E 20                 mvi  c, 20h
+0C1A:               loc_0C1A:
+0C1A: 16 19                 mvi  d, 19h
+0C1C:               loc_0C1C:
+0C1C: 2A 96 0C              lhld intro_left_bot
+0C1F: 23                    inx  h
+0C20: 7E                    mov  a, m
+0C21: 2B                    dcx  h
+0C22: 77                    mov  m, a
+0C23: D5                    push d
+0C24: 11 4E 00              lxi  d, video_stride
+0C27: 19                    dad  d
+0C28: D1                    pop  d
+0C29: 22 96 0C              shld intro_left_bot
+0C2C: 2A 98 0C              lhld intro_right_bot
+0C2F: 2B                    dcx  h
+0C30: 7E                    mov  a, m
+0C31: 23                    inx  h
+0C32: 77                    mov  m, a
+0C33: D5                    push d
+0C34: 11 4E 00              lxi  d, video_stride
+0C37: 19                    dad  d
+0C38: D1                    pop  d
+0C39: 22 98 0C              shld intro_right_bot
+0C3C: 15                    dcr  d
+0C3D: C2 1C 0C              jnz  loc_0C1C
+0C40: 2A 9A 0C              lhld intro_left_top
+0C43: 23                    inx  h
+0C44: 22 9A 0C              shld intro_left_top
+0C47: 22 96 0C              shld intro_left_bot
+0C4A: 2A 9C 0C              lhld intro_right_top
+0C4D: 2B                    dcx  h
+0C4E: 22 9C 0C              shld intro_right_top
+0C51: 22 98 0C              shld intro_right_bot
+0C54: 0D                    dcr  c
+0C55: C2 1A 0C              jnz  loc_0C1A
+0C58: 2A 96 0C              lhld intro_left_bot
+0C5B: D5                    push d
+0C5C: 11 4E 00              lxi  d, video_stride
+0C5F:               loc_0C5F:
+0C5F: 36 00                 mvi  m, 00h
+0C61: 19                    dad  d
+0C62: 7C                    mov  a, h
+0C63: FE 80                 cpi  80h
+0C65: DA 5F 0C              jc   loc_0C5F
+0C68: D1                    pop  d
+0C69: C5                    push b
+0C6A: 0E 13                 mvi  c, 13h
+0C6C: 3A 9E 0C              lda  intro_beep_freq
+0C6F: 3C                    inr  a
+0C70: FE 41                 cpi  41h
+0C72: C2 77 0C              jnz  loc_0C77
+0C75: 3E 1E                 mvi  a, 1Eh
+0C77:               loc_0C77:
+0C77: 32 9E 0C              sta  intro_beep_freq
+0C7A: 47                    mov  b, a
+0C7B: CD 27 FD              call rom_sound
+0C7E: C1                    pop  b
+0C7F: 21 C2 77              lxi  h, game_area_tl                ; 77C2h -- reset left-scan to row 3, col 8
+0C82: 22 96 0C              shld intro_left_bot
+0C85: 22 9A 0C              shld intro_left_top
+0C88: 21 01 78              lxi  h, video_memory + 3*video_stride + 71    ; 7801h -- reset right-scan to row 3, col 71
+0C8B: 22 98 0C              shld intro_right_bot
+0C8E: 22 9C 0C              shld intro_right_top
+0C91: 05                    dcr  b
+0C92: C2 18 0C              jnz  loc_0C18
+0C95: C9                    ret
+                    ; ---- scratch variables for intro_anim (4 words + 1 byte) ----
+                    ; Initial bytes here (20 21 21 21 0D 0A 75 70 6C) are leftover source
+                    ; garbage -- the first shld in intro_anim overwrites them before use.
+0C96:               intro_left_bot:                         ; offset intro_left_bot (word) -- left scan-bottom ptr
+0C96: 20 21                 db   20h, 21h
+0C98:               intro_right_bot:                        ; offset intro_right_bot (word) -- right scan-bottom ptr
+0C98: 21 21                 db   21h, 21h
+0C9A:               intro_left_top:                         ; offset intro_left_top (word) -- left scan-top ptr
+0C9A: 0D 0A                 db   0Dh, 0Ah
+0C9C:               intro_right_top:                        ; offset intro_right_top (word) -- right scan-top ptr
+0C9C: 75 70                 db   75h, 70h
+0C9E:               intro_beep_freq:                        ; offset intro_beep_freq (byte) -- cycling tone pitch
+0C9E: 6C                    db   6Ch
+0C9F:               show_menu:
+0C9F: 01 50 01              lxi  b, 0150h
+0CA2:               loc_0CA2:
+0CA2: C5                    push b
+0CA3: CD 27 FD              call rom_sound
+0CA6: C1                    pop  b
+0CA7: 04                    inr  b
+0CA8: 0D                    dcr  c
+0CA9: 78                    mov  a, b
+0CAA: FE 23                 cpi  23h
+0CAC: C2 A2 0C              jnz  loc_0CA2
+0CAF: 21 E2 0C              lxi  h, str_main_menu
+0CB2: CD 18 F8              call rom_puts
+0CB5: 21 90 12              lxi  h, str_diff_cursor
+0CB8: CD 18 F8              call rom_puts
+0CBB: 3A B3 12              lda  var_difficulty
+0CBE: C3 F5 11              jmp  apply_difficulty
+0CC1:               menu_input:
+0CC1: 0E 0C                 mvi  c, 0Ch                       ; 0Ch = home cursor (form feed)
+0CC3: CD 09 F8              call rom_putc
+0CC6: CD 03 F8              call rom_getc
+0CC9: E6 DF                 ani  0DFh                         ; force uppercase ('a'..'z' -> 'A'..'Z')
+0CCB: FE 4E                 cpi  4Eh                          ; 'N' -- Начать игру (start game)
+0CCD: CA B4 12              jz   start_new_game
+0CD0: FE 55                 cpi  55h                          ; 'U' -- Уровень (difficulty)
+0CD2: CA D3 11              jz   cycle_difficulty
+0CD5: FE 49                 cpi  49h                          ; 'I' -- Инструкция (instructions)
+0CD7: CA 3E 0D              jz   show_instructions
+0CDA: FE 03                 cpi  03h                          ; Ctrl-C -- back to monitor
+0CDC: CA 6C F8              jz   rom_prompt_loop
+0CDF: C3 C1 0C              jmp  menu_input
+0CE2:               str_main_menu:                          ; offset 0CE2h
+0CE2: 1F                    db   1Fh                                  ; clear screen
+0CE3: 1B 59 24 3B           db   1Bh, 'Y', 24h, 3Bh                   ; ESC Y row=4 col=27
+0CE7: 59 4F 55 20           db   'YOU CHOICE'                         ; (English, typo of "YOUR CHOICE")
+0CEB: 43 48 4F 49
+0CEF: 43 45
+0CF1: 1B 59 28 34           db   1Bh, 'Y', 28h, 34h                   ; ESC Y row=8 col=20
+0CF5: 75 20 2D 20           db   'u - ustanowka urownq igry'          ; "U - USTANOVKA UROVNYA IGRY" -- U - set game level
+0CF9: 75 73 74 61
+0CFD: 6E 6F 77 6B
+0D01: 61 20 75 72
+0D05: 6F 77 6E 71
+0D09: 20 69 67 72
+0D0D: 79
+0D0E: 1B 59 2B 34           db   1Bh, 'Y', 2Bh, 34h                   ; ESC Y row=11 col=20
+0D12: 69 20 2D 20           db   'i - instrukciq'                     ; "I - INSTRUKTSIYA" -- I - instructions
+0D16: 69 6E 73 74
+0D1A: 72 75 6B 63
+0D1E: 69 71
+0D20: 1B 59 2E 34           db   1Bh, 'Y', 2Eh, 34h                   ; ESC Y row=14 col=20
+0D24: 6E 20 2D 20           db   'n - i g r a .'                      ; "N - I G R A ." -- N - g a m e .
+0D28: 69 20 67 20
+0D2C: 72 20 61 20
+0D30: 2E
+0D31: 1B 59 35 48           db   1Bh, 'Y', 35h, 48h                   ; ESC Y row=21 col=40
+0D35: 75 72 6F 77           db   'urowenx:', 00h                      ; "UROVEN':" -- level:
+0D39: 65 6E 78 3A
+0D3D: 00
+0D3E:               show_instructions:
+0D3E: 21 64 0D              lxi  h, str_instructions
+0D41:               loc_0D41:
+0D41: 7E                    mov  a, m
+0D42: FE 00                 cpi  00h
+0D44: CA 5B 0D              jz   loc_0D5B
+0D47: FE 0D                 cpi  0Dh
+0D49: C2 51 0D              jnz  loc_0D51
+0D4C: 0E 07                 mvi  c, 07h
+0D4E: CD 09 F8              call rom_putc
+0D51:               loc_0D51:
+0D51: 4F                    mov  c, a
+0D52: FB                    ei
+0D53: CD 09 F8              call rom_putc
+0D56: F3                    di
+0D57: 23                    inx  h
+0D58: C3 41 0D              jmp  loc_0D41
+0D5B:               loc_0D5B:
+0D5B: CD 03 F8              call rom_getc
+0D5E: CD FF 0B              call intro_anim
+0D61: C3 9F 0C              jmp  show_menu
+0D64:               str_instructions:                       ; offset 0D64h
+0D64: 1F                    db   1Fh                                 ; clear screen
+0D65: 1B 59 20 33           db   1Bh, 'Y', 20h, 33h                ; ESC Y row=0 col=19
+0D69: 69 20 6E 20           db   'i n s t r u k c i q'                         ; "И Н С Т Р У К Ц И Я"
+0D6D: 73 20 74 20
+0D71: 72 20 75 20
+0D75: 6B 20 63 20
+0D79: 69 20 71
+0D7C: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+0D7E: 0A                    db   0Ah                                  ; LF
+0D7F: 69 64 65 74           db   'idet 2989 god...aprelx mesqc.na na{u planetu obru{ilosx'  ; "ИДЕТ 2989 ГОД...АПРЕЛЬ МЕСЯЦ.НА НАШУ ПЛАНЕТУ ОБРУШИЛОСЬ"
+0D83: 20 32 39 38
+0D87: 39 20 67 6F
+0D8B: 64 2E 2E 2E
+0D8F: 61 70 72 65
+0D93: 6C 78 20 6D
+0D97: 65 73 71 63
+0D9B: 2E 6E 61 20
+0D9F: 6E 61 7B 75
+0DA3: 20 70 6C 61
+0DA7: 6E 65 74 75
+0DAB: 20 6F 62 72
+0DAF: 75 7B 69 6C
+0DB3: 6F 73 78
+0DB6: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+0DB8: 74 71 76 6B           db   'tqvkoe bedstwie.22 i`nq 2941 goda w 4 ~asa utra bez ob"-'  ; "ТЯЖКОЕ БЕДСТВИЕ.22 ИЮНЯ 2941 ГОДА В 4 ЧАСА УТРА БЕЗ ОБ""-"
+0DBC: 6F 65 20 62
+0DC0: 65 64 73 74
+0DC4: 77 69 65 2E
+0DC8: 32 32 20 69
+0DCC: 60 6E 71 20
+0DD0: 32 39 34 31
+0DD4: 20 67 6F 64
+0DD8: 61 20 77 20
+0DDC: 34 20 7E 61
+0DE0: 73 61 20 75
+0DE4: 74 72 61 20
+0DE8: 62 65 7A 20
+0DEC: 6F 62 22 2D
+0DF0: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+0DF2: 71 77 6C 65           db   'qwleniq wojny na planetu "zemlq" obru{ilisx pol~i}a mar-'  ; "ЯВЛЕНИЯ ВОЙНЫ НА ПЛАНЕТУ ""ЗЕМЛЯ"" ОБРУШИЛИСЬ ПОЛЧИЩА МАР-"
+0DF6: 6E 69 71 20
+0DFA: 77 6F 6A 6E
+0DFE: 79 20 6E 61
+0E02: 20 70 6C 61
+0E06: 6E 65 74 75
+0E0A: 20 22 7A 65
+0E0E: 6D 6C 71 22
+0E12: 20 6F 62 72
+0E16: 75 7B 69 6C
+0E1A: 69 73 78 20
+0E1E: 70 6F 6C 7E
+0E22: 69 7D 61 20
+0E26: 6D 61 72 2D
+0E2A: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+0E2C: 73 69 61 6E           db   'sian ~toby porabotitx zeml` i nawqzatx ~uvdyj nam stroj,'  ; "СИАН ЧТОБЫ ПОРАБОТИТЬ ЗЕМЛЮ И НАВЯЗАТЬ ЧУЖДЫЙ НАМ СТРОЙ,"
+0E30: 20 7E 74 6F
+0E34: 62 79 20 70
+0E38: 6F 72 61 62
+0E3C: 6F 74 69 74
+0E40: 78 20 7A 65
+0E44: 6D 6C 60 20
+0E48: 69 20 6E 61
+0E4C: 77 71 7A 61
+0E50: 74 78 20 7E
+0E54: 75 76 64 79
+0E58: 6A 20 6E 61
+0E5C: 6D 20 73 74
+0E60: 72 6F 6A 2C
+0E64: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+0E66: 69 20 73 64           db   'i sdelatx "zeml`" stranoj rabow.'            ; "И СДЕЛАТЬ ""ЗЕМЛЮ"" СТРАНОЙ РАБОВ."
+0E6A: 65 6C 61 74
+0E6E: 78 20 22 7A
+0E72: 65 6D 6C 60
+0E76: 22 20 73 74
+0E7A: 72 61 6E 6F
+0E7E: 6A 20 72 61
+0E82: 62 6F 77 2E
+0E86: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+0E88: 0A                    db   0Ah                                  ; LF
+0E89: 77 79 20 6D           db   'wy mobilizowany rajonnym woenkomatom dlq za}ity rodiny'  ; "ВЫ МОБИЛИЗОВАНЫ РАЙОННЫМ ВОЕНКОМАТОМ ДЛЯ ЗАЩИТЫ РОДИНЫ"
+0E8D: 6F 62 69 6C
+0E91: 69 7A 6F 77
+0E95: 61 6E 79 20
+0E99: 72 61 6A 6F
+0E9D: 6E 6E 79 6D
+0EA1: 20 77 6F 65
+0EA5: 6E 6B 6F 6D
+0EA9: 61 74 6F 6D
+0EAD: 20 64 6C 71
+0EB1: 20 7A 61 7D
+0EB5: 69 74 79 20
+0EB9: 72 6F 64 69
+0EBD: 6E 79
+0EBF: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+0EC1: 69 20 6F 74           db   'i otprawleny w wojska pwo.'                  ; "И ОТПРАВЛЕНЫ В ВОЙСКА ПВО."
+0EC5: 70 72 61 77
+0EC9: 6C 65 6E 79
+0ECD: 20 77 20 77
+0ED1: 6F 6A 73 6B
+0ED5: 61 20 70 77
+0ED9: 6F 2E
+0EDB: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+0EDD: 0A                    db   0Ah                                  ; LF
+0EDE: 20 20 20 70           db   '   pod wa{im komandowaniem nahoditsq podwivnaq zenitnaq'  ; "   ПОД ВАШИМ КОМАНДОВАНИЕМ НАХОДИТСЯ ПОДВИЖНАЯ ЗЕНИТНАЯ"
+0EE2: 6F 64 20 77
+0EE6: 61 7B 69 6D
+0EEA: 20 6B 6F 6D
+0EEE: 61 6E 64 6F
+0EF2: 77 61 6E 69
+0EF6: 65 6D 20 6E
+0EFA: 61 68 6F 64
+0EFE: 69 74 73 71
+0F02: 20 70 6F 64
+0F06: 77 69 76 6E
+0F0A: 61 71 20 7A
+0F0E: 65 6E 69 74
+0F12: 6E 61 71
+0F15: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+0F17: 73 69 73 74           db   'sistema na wozdu{noj podu{ke.wa{a zada~a atakowatx marsi-'  ; "СИСТЕМА НА ВОЗДУШНОЙ ПОДУШКЕ.ВАША ЗАДАЧА АТАКОВАТЬ МАРСИ-"
+0F1B: 65 6D 61 20
+0F1F: 6E 61 20 77
+0F23: 6F 7A 64 75
+0F27: 7B 6E 6F 6A
+0F2B: 20 70 6F 64
+0F2F: 75 7B 6B 65
+0F33: 2E 77 61 7B
+0F37: 61 20 7A 61
+0F3B: 64 61 7E 61
+0F3F: 20 61 74 61
+0F43: 6B 6F 77 61
+0F47: 74 78 20 6D
+0F4B: 61 72 73 69
+0F4F: 2D
+0F50: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+0F52: 61 6E 20 74           db   'an torpedami,a tak ve prepqtstwowatx proniknoweni` diwer-'  ; "АН ТОРПЕДАМИ,А ТАК ЖЕ ПРЕПЯТСТВОВАТЬ ПРОНИКНОВЕНИЮ ДИВЕР-"
+0F56: 6F 72 70 65
+0F5A: 64 61 6D 69
+0F5E: 2C 61 20 74
+0F62: 61 6B 20 76
+0F66: 65 20 70 72
+0F6A: 65 70 71 74
+0F6E: 73 74 77 6F
+0F72: 77 61 74 78
+0F76: 20 70 72 6F
+0F7A: 6E 69 6B 6E
+0F7E: 6F 77 65 6E
+0F82: 69 60 20 64
+0F86: 69 77 65 72
+0F8A: 2D
+0F8B: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+0F8D: 73 61 6E 74           db   'santow desantnikow na strategi~eski wavnye ob"ekty,koto-'  ; "САНТОВ ДЕСАНТНИКОВ НА СТРАТЕГИЧЕСКИ ВАЖНЫЕ ОБ""ЕКТЫ,КОТО-"
+0F91: 6F 77 20 64
+0F95: 65 73 61 6E
+0F99: 74 6E 69 6B
+0F9D: 6F 77 20 6E
+0FA1: 61 20 73 74
+0FA5: 72 61 74 65
+0FA9: 67 69 7E 65
+0FAD: 73 6B 69 20
+0FB1: 77 61 76 6E
+0FB5: 79 65 20 6F
+0FB9: 62 22 65 6B
+0FBD: 74 79 2C 6B
+0FC1: 6F 74 6F 2D
+0FC5: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+0FC7: 72 79 65 20           db   'rye nahodqtsq w zone wa{ego peredwiveniq.desantnikow mo-'  ; "РЫЕ НАХОДЯТСЯ В ЗОНЕ ВАШЕГО ПЕРЕДВИЖЕНИЯ.ДЕСАНТНИКОВ МО-"
+0FCB: 6E 61 68 6F
+0FCF: 64 71 74 73
+0FD3: 71 20 77 20
+0FD7: 7A 6F 6E 65
+0FDB: 20 77 61 7B
+0FDF: 65 67 6F 20
+0FE3: 70 65 72 65
+0FE7: 64 77 69 76
+0FEB: 65 6E 69 71
+0FEF: 2E 64 65 73
+0FF3: 61 6E 74 6E
+0FF7: 69 6B 6F 77
+0FFB: 20 6D 6F 2D
+0FFF: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+1001: 76 6E 6F 20           db   'vno perehwatywatx swoej platformoj,no tak kak pri obez-'  ; "ЖНО ПЕРЕХВАТЫВАТЬ СВОЕЙ ПЛАТФОРМОЙ,НО ТАК КАК ПРИ ОБЕЗ-"
+1005: 70 65 72 65
+1009: 68 77 61 74
+100D: 79 77 61 74
+1011: 78 20 73 77
+1015: 6F 65 6A 20
+1019: 70 6C 61 74
+101D: 66 6F 72 6D
+1021: 6F 6A 2C 6E
+1025: 6F 20 74 61
+1029: 6B 20 6B 61
+102D: 6B 20 70 72
+1031: 69 20 6F 62
+1035: 65 7A 2D
+1038: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+103A: 77 72 65 76           db   'wreviwanii ego wy terqete viwu` silu,|to slabo oceniwa-'  ; "ВРЕЖИВАНИИ ЕГО ВЫ ТЕРЯЕТЕ ЖИВУЮ СИЛУ,ЭТО СЛАБО ОЦЕНИВА-"
+103E: 69 77 61 6E
+1042: 69 69 20 65
+1046: 67 6F 20 77
+104A: 79 20 74 65
+104E: 72 71 65 74
+1052: 65 20 76 69
+1056: 77 75 60 20
+105A: 73 69 6C 75
+105E: 2C 7C 74 6F
+1062: 20 73 6C 61
+1066: 62 6F 20 6F
+106A: 63 65 6E 69
+106E: 77 61 2D
+1071: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+1073: 65 74 73 71           db   'etsq.namnogo |ffektiwnee sbiwatx diwersantow torpedoj,'  ; "ЕТСЯ.НАМНОГО ЭФФЕКТИВНЕЕ СБИВАТЬ ДИВЕРСАНТОВ ТОРПЕДОЙ,"
+1077: 2E 6E 61 6D
+107B: 6E 6F 67 6F
+107F: 20 7C 66 66
+1083: 65 6B 74 69
+1087: 77 6E 65 65
+108B: 20 73 62 69
+108F: 77 61 74 78
+1093: 20 64 69 77
+1097: 65 72 73 61
+109B: 6E 74 6F 77
+109F: 20 74 6F 72
+10A3: 70 65 64 6F
+10A7: 6A 2C
+10A9: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+10AB: 6E 6F 20 74           db   'no togda nuvno delatx pomenx{e promahow.za |ffektiwnoe'  ; "НО ТОГДА НУЖНО ДЕЛАТЬ ПОМЕНЬШЕ ПРОМАХОВ.ЗА ЭФФЕКТИВНОЕ"
+10AF: 6F 67 64 61
+10B3: 20 6E 75 76
+10B7: 6E 6F 20 64
+10BB: 65 6C 61 74
+10BF: 78 20 70 6F
+10C3: 6D 65 6E 78
+10C7: 7B 65 20 70
+10CB: 72 6F 6D 61
+10CF: 68 6F 77 2E
+10D3: 7A 61 20 7C
+10D7: 66 66 65 6B
+10DB: 74 69 77 6E
+10DF: 6F 65
+10E1: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+10E3: 75 6E 69 7E           db   'uni~tovenie diwersantow federaciq premiruet was awtona-'  ; "УНИЧТОЖЕНИЕ ДИВЕРСАНТОВ ФЕДЕРАЦИЯ ПРЕМИРУЕТ ВАС АВТОНА-"
+10E7: 74 6F 76 65
+10EB: 6E 69 65 20
+10EF: 64 69 77 65
+10F3: 72 73 61 6E
+10F7: 74 6F 77 20
+10FB: 66 65 64 65
+10FF: 72 61 63 69
+1103: 71 20 70 72
+1107: 65 6D 69 72
+110B: 75 65 74 20
+110F: 77 61 73 20
+1113: 61 77 74 6F
+1117: 6E 61 2D
+111A: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+111C: 77 6F 64 71           db   'wodq}ej sistemoj na diwersantow.horo{o oceniwa`tsq sbi-'  ; "ВОДЯЩЕЙ СИСТЕМОЙ НА ДИВЕРСАНТОВ.ХОРОШО ОЦЕНИВАЮТСЯ СБИ-"
+1120: 7D 65 6A 20
+1124: 73 69 73 74
+1128: 65 6D 6F 6A
+112C: 20 6E 61 20
+1130: 64 69 77 65
+1134: 72 73 61 6E
+1138: 74 6F 77 2E
+113C: 68 6F 72 6F
+1140: 7B 6F 20 6F
+1144: 63 65 6E 69
+1148: 77 61 60 74
+114C: 73 71 20 73
+1150: 62 69 2D
+1153: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+1155: 74 79 65 20           db   'tye korabli marsian.'                        ; "ТЫЕ КОРАБЛИ МАРСИАН."
+1159: 6B 6F 72 61
+115D: 62 6C 69 20
+1161: 6D 61 72 73
+1165: 69 61 6E 2E
+1169: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+116B: 6B 6C 61 77           db   'klawi{i '                                    ; "КЛАВИШИ "
+116F: 69 7B 69 20
+1173: 1D                    db   1Dh                                  ; ▶ (arrow right)
+1174: 20                    db   ' '                                           ; " "
+1175: 0E                    db   0Eh                                  ; ◀ (arrow left)
+1176: 20                    db   ' '                                           ; " "
+1177: 0B                    db   0Bh                                  ; ↑ (arrow up)
+1178: 20                    db   ' '                                           ; " "
+1179: 0F                    db   0Fh                                  ; ▼ (arrow down)
+117A: 20 70 65 72           db   ' peredwiga`t wa{u sistemu,"probel"-wystrel'  ; " ПЕРЕДВИГАЮТ ВАШУ СИСТЕМУ,""ПРОБЕЛ""-ВЫСТРЕЛ"
+117E: 65 64 77 69
+1182: 67 61 60 74
+1186: 20 77 61 7B
+118A: 75 20 73 69
+118E: 73 74 65 6D
+1192: 75 2C 22 70
+1196: 72 6F 62 65
+119A: 6C 22 2D 77
+119E: 79 73 74 72
+11A2: 65 6C
+11A4: 0D 0A                 db   0Dh, 0Ah                             ; CR LF
+11A6: 22 61 72 32           db   '"ar2"-priostanow igry.   vela` uda~i.  mh-12' ; """АР2""-ПРИОСТАНОВ ИГРЫ.   ЖЕЛАЮ УДАЧИ.  МХ-12"
+11AA: 22 2D 70 72
+11AE: 69 6F 73 74
+11B2: 61 6E 6F 77
+11B6: 20 69 67 72
+11BA: 79 2E 20 20
+11BE: 20 76 65 6C
+11C2: 61 60 20 75
+11C6: 64 61 7E 69
+11CA: 2E 20 20 6D
+11CE: 68 2D 31 32
+11D2: 00                    db   00h                                  ; NUL
+11D3:               cycle_difficulty:
+11D3: 21 90 12              lxi  h, str_diff_cursor
+11D6: CD 18 F8              call rom_puts
+11D9: 01 30 0A              lxi  b, 0A30h
+11DC:               loc_11DC:
+11DC: C5                    push b
+11DD: CD 27 FD              call rom_sound
+11E0: C1                    pop  b
+11E1: 05                    dcr  b
+11E2: 0C                    inr  c
+11E3: 0C                    inr  c
+11E4: 78                    mov  a, b
+11E5: FE 02                 cpi  02h
+11E7: C2 DC 11              jnz  loc_11DC
+11EA: 3A B3 12              lda  var_difficulty
+11ED: 3C                    inr  a
+11EE: FE 04                 cpi  04h
+11F0: C2 F5 11              jnz  apply_difficulty
+11F3: 3E 01                 mvi  a, 01h
+11F5:               apply_difficulty:
+11F5: 32 B3 12              sta  var_difficulty
+11F8: FE 01                 cpi  01h
+11FA: CA 5E 12              jz   difficulty_easy
+11FD: FE 02                 cpi  02h
+11FF: CA 2D 12              jz   difficulty_medium
+                    ; Difficulty setters are SMC patchers: each one overwrites the
+                    ; immediate operand inside a handful of `mvi a, nn` / `cpi nn`
+                    ; instructions in the game loop. The labels <name>_reload /
+                    ; <name>_debounce / saboteur_spawn_rate point at those instructions,
+                    ; so `<label> + 1` is the byte holding the patched immediate.
+1202: 21 95 12              lxi  h, str_diff_hard
+1205: CD 18 F8              call rom_puts
+1208: 3E 03                 mvi  a, 03h
+120A: 32 D1 04              sta  move_left_debounce + 1
+120D: 32 03 05              sta  move_right_debounce + 1
+1210: 3C                    inr  a                           ; a = 04h
+1211: 32 35 05              sta  move_up_debounce + 1
+1214: 32 69 05              sta  move_down_debounce + 1
+1217: 32 F1 05              sta  torpedo_timer_reload + 1
+121A: 3E 0F                 mvi  a, 0Fh
+121C: 32 AF 03              sta  climber_timer_reload + 1
+121F: 3E 12                 mvi  a, 12h
+1221: 32 74 03              sta  saboteur_spawn_rate + 1
+1224: 21 60 01              lxi  h, 0160h
+1227: 22 8E 07              shld frame_delay + 1
+122A: C3 C1 0C              jmp  menu_input
+122D:               difficulty_medium:
+122D: 21 9F 12              lxi  h, str_diff_medium
+1230: CD 18 F8              call rom_puts
+1233: 3E 04                 mvi  a, 04h
+1235: 32 D1 04              sta  move_left_debounce + 1
+1238: 32 F1 05              sta  torpedo_timer_reload + 1
+123B: 32 03 05              sta  move_right_debounce + 1
+123E: 3E 06                 mvi  a, 06h
+1240: 32 35 05              sta  move_up_debounce + 1
+1243: 32 69 05              sta  move_down_debounce + 1
+1246: 3E 0A                 mvi  a, 0Ah
+1248: 32 CA 02              sta  saboteur_timer_reload + 1
+124B: 3E 12                 mvi  a, 12h
+124D: 32 AF 03              sta  climber_timer_reload + 1
+1250: 3E 14                 mvi  a, 14h
+1252: 32 74 03              sta  saboteur_spawn_rate + 1
+1255: 21 00 02              lxi  h, 0200h
+1258: 22 8E 07              shld frame_delay + 1
+125B: C3 C1 0C              jmp  menu_input
+125E:               difficulty_easy:
+125E: 21 A9 12              lxi  h, str_diff_easy
+1261: CD 18 F8              call rom_puts
+1264: 3E 04                 mvi  a, 04h
+1266: 32 D1 04              sta  move_left_debounce + 1
+1269: 32 03 05              sta  move_right_debounce + 1
+126C: 3D                    dcr  a                           ; a = 03h
+126D: 32 F1 05              sta  torpedo_timer_reload + 1
+1270: 3E 05                 mvi  a, 05h
+1272: 32 35 05              sta  move_up_debounce + 1
+1275: 32 69 05              sta  move_down_debounce + 1
+1278: 3E 0F                 mvi  a, 0Fh
+127A: 32 CA 02              sta  saboteur_timer_reload + 1
+127D: 3E 1C                 mvi  a, 1Ch
+127F: 32 AF 03              sta  climber_timer_reload + 1
+1282: 3E 16                 mvi  a, 16h
+1284: 32 74 03              sta  saboteur_spawn_rate + 1
+1287: 21 50 02              lxi  h, 0250h
+128A: 22 8E 07              shld frame_delay + 1
+128D: C3 C1 0C              jmp  menu_input
+1290:               str_diff_cursor:                        ; offset 1290h
+1290: 1B 59 34 48           db   1Bh, 'Y', 34h, 48h, 00h    ; ESC Y row=20 col=40, NUL  (cursor-only)
+1294: 00
+1295:               str_diff_hard:                          ; offset 1295h
+1295: 74 71 76 65           db   'tqvelyj  ', 00h           ; "TYAZHELYJ  " -- hard
+1299: 6C 79 6A 20
+129D: 20 00
+129F:               str_diff_medium:                        ; offset 129Fh
+129F: 73 72 65 64           db   'srednij  ', 00h           ; "SREDNIJ  " -- medium
+12A3: 6E 69 6A 20
+12A7: 20 00
+12A9:               str_diff_easy:                          ; offset 12A9h
+12A9: 6C 65 67 6B           db   'legkij   ', 00h           ; "LEGKIJ   " -- easy
+12AD: 69 6A 20 20
+12B1: 20 00
+12B3:               var_difficulty:
+12B3: 01                    db   01h                        ; var_difficulty (1=easy, 2=medium, 3=hard)
+12B4:               start_new_game:
+12B4: C3 24 02              jmp  game_start
+12B7:               cold_init:
+12B7: 0E 1F                 mvi  c, 1Fh
+12B9: CD 09 F8              call rom_putc
+12BC: CD D3 12              call video_reinit
+12BF: CD C3 12              call run_patch_table
+12C2: C9                    ret
+                    ; Apply the static patch table that paints the game backdrop onto
+                    ; video RAM. Table format: sequence of (value, addr_lo, addr_hi)
+                    ; triplets terminated by a 1Bh sentinel at the value position.
+                    ; Each triplet writes `value` to the given 16-bit address. Called
+                    ; once from cold_init after the screen is cleared.
+12C3:               run_patch_table:                        ; offset 12C3h
+12C3: 21 F0 12              lxi  h, patch_table              ; 12F0h -- start of the triplet stream
+12C6:               loc_12C6:
+12C6: 7E                    mov  a, m
+12C7: FE 1B                 cpi  1Bh                         ; 1Bh -- end-of-table sentinel
+12C9: C8                    rz
+12CA: 23                    inx  h
+12CB: 4E                    mov  c, m                        ; target addr low
+12CC: 23                    inx  h
+12CD: 46                    mov  b, m                        ; target addr high
+12CE: 02                    stax b                           ; [BC] = value
+12CF: 23                    inx  h
+12D0: C3 C6 12              jmp  loc_12C6
+12D3:               video_reinit:
+12D3: E5                    push h
+12D4: 21 01 C0              lxi  h, 0C001h
+12D7: 36 00                 mvi  m, 00h
+12D9: 2B                    dcx  h
+12DA: 36 4D                 mvi  m, 4Dh
+12DC: 36 5D                 mvi  m, 5Dh
+12DE: 36 78                 mvi  m, 78h
+12E0: 36 F3                 mvi  m, 0F3h
+12E2: 23                    inx  h
+12E3: 36 27                 mvi  m, 27h
+12E5: C3 E0 FA              jmp  rom_video_tail
+                    ; ---- Orphan bytes at 12E8h..12EFh (8 bytes, not reachable) ----
+                    ; Disassembled looks like a truncated "mov c,a / call monitor_scan_kbd /
+                    ; cpi FFh / jz ..." fragment (the jz operand spills into the patch table).
+                    ; Left behind by the developer; run_patch_table jumps over them by
+                    ; pointing HL at 12F0h, so execution never reaches this byte range.
+12E8: 4F CD 03 00           db   4Fh, 0CDh, 03h, 00h, 0FEh, 0FFh, 0CAh, 0E9h                ; 12E8h: dead fragment
+12EC: FE FF CA E9
+                    ; ---- Patch table consumed by run_patch_table (12F0h..1707h) ----
+                    ; Each triplet is (value, addr_lo, addr_hi): run_patch_table writes
+                    ; `value` to the 16-bit address, advances 3 bytes, and repeats until
+                    ; a value byte of 1Bh is seen (terminator). All target addresses land
+                    ; in video RAM (76D0h..7FF4h), so this table paints the decorative
+                    ; backdrop of the play field at cold start. ~349 triplets total.
+12F0:               patch_table:                                                            ; offset 12F0h
+12F0: 2E                    db   2Eh                                    ; '.'
+12F1: C4 77                 dw   video_memory +  3*video_stride + 10  ; 77C4h row  3 col 10
+12F3: 04                    db   04h                                    ; ▗
+12F4: C8 77                 dw   video_memory +  3*video_stride + 14  ; 77C8h row  3 col 14
+12F6: 14                    db   14h                                    ; ▄
+12F7: C9 77                 dw   video_memory +  3*video_stride + 15  ; 77C9h row  3 col 15
+12F9: 17                    db   17h                                    ; █
+12FA: CA 77                 dw   video_memory +  3*video_stride + 16  ; 77CAh row  3 col 16
+12FC: 14                    db   14h                                    ; ▄
+12FD: CB 77                 dw   video_memory +  3*video_stride + 17  ; 77CBh row  3 col 17
+12FF: 10                    db   10h                                    ; ▖
+1300: CC 77                 dw   video_memory +  3*video_stride + 18  ; 77CCh row  3 col 18
+1302: 5E                    db   5Eh                                    ; '^'
+1303: D8 77                 dw   video_memory +  3*video_stride + 30  ; 77D8h row  3 col 30
+1305: 5E                    db   5Eh                                    ; '^'
+1306: DA 77                 dw   video_memory +  3*video_stride + 32  ; 77DAh row  3 col 32
+1308: 5E                    db   5Eh                                    ; '^'
+1309: DC 77                 dw   video_memory +  3*video_stride + 34  ; 77DCh row  3 col 34
+130B: 5E                    db   5Eh                                    ; '^'
+130C: DE 77                 dw   video_memory +  3*video_stride + 36  ; 77DEh row  3 col 36
+130E: 5E                    db   5Eh                                    ; '^'
+130F: E0 77                 dw   video_memory +  3*video_stride + 38  ; 77E0h row  3 col 38
+1311: 5E                    db   5Eh                                    ; '^'
+1312: E2 77                 dw   video_memory +  3*video_stride + 40  ; 77E2h row  3 col 40
+1314: 06                    db   06h                                    ; ▐
+1315: FC 77                 dw   video_memory +  3*video_stride + 66  ; 77FCh row  3 col 66
+1317: 17                    db   17h                                    ; █
+1318: FE 77                 dw   video_memory +  3*video_stride + 68  ; 77FEh row  3 col 68
+131A: 10                    db   10h                                    ; ▖
+131B: FF 77                 dw   video_memory +  3*video_stride + 69  ; 77FFh row  3 col 69
+
+131D: 04                    db   04h                                    ; ▗
+131E: 15 78                 dw   video_memory +  4*video_stride + 13  ; 7815h row  4 col 13
+1320: 17                    db   17h                                    ; █
+1321: 16 78                 dw   video_memory +  4*video_stride + 14  ; 7816h row  4 col 14
+1323: 17                    db   17h                                    ; █
+1324: 17 78                 dw   video_memory +  4*video_stride + 15  ; 7817h row  4 col 15
+1326: 17                    db   17h                                    ; █
+1327: 18 78                 dw   video_memory +  4*video_stride + 16  ; 7818h row  4 col 16
+1329: 17                    db   17h                                    ; █
+132A: 19 78                 dw   video_memory +  4*video_stride + 17  ; 7819h row  4 col 17
+132C: 17                    db   17h                                    ; █
+132D: 1A 78                 dw   video_memory +  4*video_stride + 18  ; 781Ah row  4 col 18
+132F: 10                    db   10h                                    ; ▖
+1330: 1B 78                 dw   video_memory +  4*video_stride + 19  ; 781Bh row  4 col 19
+1332: 2E                    db   2Eh                                    ; '.'
+1333: 21 78                 dw   video_memory +  4*video_stride + 25  ; 7821h row  4 col 25
+1335: 4F                    db   4Fh                                    ; 'O'
+1336: 25 78                 dw   video_memory +  4*video_stride + 29  ; 7825h row  4 col 29
+1338: 4F                    db   4Fh                                    ; 'O'
+1339: 27 78                 dw   video_memory +  4*video_stride + 31  ; 7827h row  4 col 31
+133B: 4F                    db   4Fh                                    ; 'O'
+133C: 29 78                 dw   video_memory +  4*video_stride + 33  ; 7829h row  4 col 33
+133E: 4F                    db   4Fh                                    ; 'O'
+133F: 2B 78                 dw   video_memory +  4*video_stride + 35  ; 782Bh row  4 col 35
+1341: 4F                    db   4Fh                                    ; 'O'
+1342: 2D 78                 dw   video_memory +  4*video_stride + 37  ; 782Dh row  4 col 37
+1344: 4F                    db   4Fh                                    ; 'O'
+1345: 2F 78                 dw   video_memory +  4*video_stride + 39  ; 782Fh row  4 col 39
+1347: 4F                    db   4Fh                                    ; 'O'
+1348: 31 78                 dw   video_memory +  4*video_stride + 41  ; 7831h row  4 col 41
+134A: 2E                    db   2Eh                                    ; '.'
+134B: 36 78                 dw   video_memory +  4*video_stride + 46  ; 7836h row  4 col 46
+134D: 2E                    db   2Eh                                    ; '.'
+134E: 4A 78                 dw   video_memory +  4*video_stride + 66  ; 784Ah row  4 col 66
+1350: 17                    db   17h                                    ; █
+1351: 4B 78                 dw   video_memory +  4*video_stride + 67  ; 784Bh row  4 col 67
+1353: 06                    db   06h                                    ; ▐
+1354: 4C 78                 dw   video_memory +  4*video_stride + 68  ; 784Ch row  4 col 68
+1356: 11                    db   11h                                    ; ▌
+1357: 4D 78                 dw   video_memory +  4*video_stride + 69  ; 784Dh row  4 col 69
+
+1359: 03                    db   03h                                    ; ▀
+135A: 63 78                 dw   video_memory +  5*video_stride + 13  ; 7863h row  5 col 13
+135C: 07                    db   07h                                    ; ▜
+135D: 64 78                 dw   video_memory +  5*video_stride + 14  ; 7864h row  5 col 14
+135F: 13                    db   13h                                    ; ▛
+1360: 68 78                 dw   video_memory +  5*video_stride + 18  ; 7868h row  5 col 18
+1362: 03                    db   03h                                    ; ▀
+1363: 69 78                 dw   video_memory +  5*video_stride + 19  ; 7869h row  5 col 19
+1365: 2E                    db   2Eh                                    ; '.'
+1366: 6D 78                 dw   video_memory +  5*video_stride + 23  ; 786Dh row  5 col 23
+1368: 3D                    db   3Dh                                    ; '='
+1369: 74 78                 dw   video_memory +  5*video_stride + 30  ; 7874h row  5 col 30
+136B: 3D                    db   3Dh                                    ; '='
+136C: 76 78                 dw   video_memory +  5*video_stride + 32  ; 7876h row  5 col 32
+136E: 3D                    db   3Dh                                    ; '='
+136F: 78 78                 dw   video_memory +  5*video_stride + 34  ; 7878h row  5 col 34
+1371: 3D                    db   3Dh                                    ; '='
+1372: 7A 78                 dw   video_memory +  5*video_stride + 36  ; 787Ah row  5 col 36
+1374: 3D                    db   3Dh                                    ; '='
+1375: 7C 78                 dw   video_memory +  5*video_stride + 38  ; 787Ch row  5 col 38
+1377: 3D                    db   3Dh                                    ; '='
+1378: 7E 78                 dw   video_memory +  5*video_stride + 40  ; 787Eh row  5 col 40
+137A: 2E                    db   2Eh                                    ; '.'
+137B: 8D 78                 dw   video_memory +  5*video_stride + 55  ; 788Dh row  5 col 55
+137D: 2E                    db   2Eh                                    ; '.'
+137E: 92 78                 dw   video_memory +  5*video_stride + 60  ; 7892h row  5 col 60
+1380: 06                    db   06h                                    ; ▐
+1381: 99 78                 dw   video_memory +  5*video_stride + 67  ; 7899h row  5 col 67
+1383: 03                    db   03h                                    ; ▀
+1384: 9B 78                 dw   video_memory +  5*video_stride + 69  ; 789Bh row  5 col 69
+
+1386: 2E                    db   2Eh                                    ; '.'
+1387: AD 78                 dw   video_memory +  6*video_stride +  9  ; 78ADh row  6 col  9
+1389: 16                    db   16h                                    ; ▟
+138A: B2 78                 dw   video_memory +  6*video_stride + 14  ; 78B2h row  6 col 14
+138C: 14                    db   14h                                    ; ▄
+138D: B4 78                 dw   video_memory +  6*video_stride + 16  ; 78B4h row  6 col 16
+138F: 15                    db   15h                                    ; ▙
+1390: B6 78                 dw   video_memory +  6*video_stride + 18  ; 78B6h row  6 col 18
+1392: 2E                    db   2Eh                                    ; '.'
+1393: CE 78                 dw   video_memory +  6*video_stride + 42  ; 78CEh row  6 col 42
+1395: 2E                    db   2Eh                                    ; '.'
+1396: D6 78                 dw   video_memory +  6*video_stride + 50  ; 78D6h row  6 col 50
+1398: 2E                    db   2Eh                                    ; '.'
+1399: E3 78                 dw   video_memory +  6*video_stride + 63  ; 78E3h row  6 col 63
+139B: 07                    db   07h                                    ; ▜
+139C: E8 78                 dw   video_memory +  6*video_stride + 68  ; 78E8h row  6 col 68
+139E: 06                    db   06h                                    ; ▐
+139F: EB 78                 dw   video_memory +  6*video_stride + 71  ; 78EBh row  6 col 71
+
+13A1: 13                    db   13h                                    ; ▛
+13A2: 00 79                 dw   video_memory +  7*video_stride + 14  ; 7900h row  7 col 14
+13A4: 06                    db   06h                                    ; ▐
+13A5: 01 79                 dw   video_memory +  7*video_stride + 15  ; 7901h row  7 col 15
+13A7: 17                    db   17h                                    ; █
+13A8: 02 79                 dw   video_memory +  7*video_stride + 16  ; 7902h row  7 col 16
+13AA: 11                    db   11h                                    ; ▌
+13AB: 03 79                 dw   video_memory +  7*video_stride + 17  ; 7903h row  7 col 17
+13AD: 07                    db   07h                                    ; ▜
+13AE: 04 79                 dw   video_memory +  7*video_stride + 18  ; 7904h row  7 col 18
+13B0: 2E                    db   2Eh                                    ; '.'
+13B1: 12 79                 dw   video_memory +  7*video_stride + 32  ; 7912h row  7 col 32
+13B3: 2E                    db   2Eh                                    ; '.'
+13B4: 29 79                 dw   video_memory +  7*video_stride + 55  ; 7929h row  7 col 55
+13B6: 03                    db   03h                                    ; ▀
+13B7: 37 79                 dw   video_memory +  7*video_stride + 69  ; 7937h row  7 col 69
+13B9: 17                    db   17h                                    ; █
+13BA: 38 79                 dw   video_memory +  7*video_stride + 70  ; 7938h row  7 col 70
+13BC: 02                    db   02h                                    ; ▝
+13BD: 39 79                 dw   video_memory +  7*video_stride + 71  ; 7939h row  7 col 71
+
+13BF: 17                    db   17h                                    ; █
+13C0: 4E 79                 dw   video_memory +  8*video_stride + 14  ; 794Eh row  8 col 14
+13C2: 14                    db   14h                                    ; ▄
+13C3: 4F 79                 dw   video_memory +  8*video_stride + 15  ; 794Fh row  8 col 15
+13C5: 17                    db   17h                                    ; █
+13C6: 50 79                 dw   video_memory +  8*video_stride + 16  ; 7950h row  8 col 16
+13C8: 14                    db   14h                                    ; ▄
+13C9: 51 79                 dw   video_memory +  8*video_stride + 17  ; 7951h row  8 col 17
+13CB: 17                    db   17h                                    ; █
+13CC: 52 79                 dw   video_memory +  8*video_stride + 18  ; 7952h row  8 col 18
+13CE: 82                    db   82h                                    ; inverse ▝
+13CF: 55 79                 dw   video_memory +  8*video_stride + 21  ; 7955h row  8 col 21
+13D1: 17                    db   17h                                    ; █
+13D2: 59 79                 dw   video_memory +  8*video_stride + 25  ; 7959h row  8 col 25
+13D4: 17                    db   17h                                    ; █
+13D5: 5A 79                 dw   video_memory +  8*video_stride + 26  ; 795Ah row  8 col 26
+13D7: 17                    db   17h                                    ; █
+13D8: 5D 79                 dw   video_memory +  8*video_stride + 29  ; 795Dh row  8 col 29
+13DA: 17                    db   17h                                    ; █
+13DB: 61 79                 dw   video_memory +  8*video_stride + 33  ; 7961h row  8 col 33
+13DD: 17                    db   17h                                    ; █
+13DE: 63 79                 dw   video_memory +  8*video_stride + 35  ; 7963h row  8 col 35
+13E0: 17                    db   17h                                    ; █
+13E1: 64 79                 dw   video_memory +  8*video_stride + 36  ; 7964h row  8 col 36
+13E3: 17                    db   17h                                    ; █
+13E4: 65 79                 dw   video_memory +  8*video_stride + 37  ; 7965h row  8 col 37
+13E6: 17                    db   17h                                    ; █
+13E7: 68 79                 dw   video_memory +  8*video_stride + 40  ; 7968h row  8 col 40
+13E9: 17                    db   17h                                    ; █
+13EA: 69 79                 dw   video_memory +  8*video_stride + 41  ; 7969h row  8 col 41
+13EC: 17                    db   17h                                    ; █
+13ED: 6A 79                 dw   video_memory +  8*video_stride + 42  ; 796Ah row  8 col 42
+13EF: 17                    db   17h                                    ; █
+13F0: 6B 79                 dw   video_memory +  8*video_stride + 43  ; 796Bh row  8 col 43
+13F2: 17                    db   17h                                    ; █
+13F3: 6E 79                 dw   video_memory +  8*video_stride + 46  ; 796Eh row  8 col 46
+13F5: 17                    db   17h                                    ; █
+13F6: 6F 79                 dw   video_memory +  8*video_stride + 47  ; 796Fh row  8 col 47
+13F8: 17                    db   17h                                    ; █
+13F9: 73 79                 dw   video_memory +  8*video_stride + 51  ; 7973h row  8 col 51
+13FB: 17                    db   17h                                    ; █
+13FC: 74 79                 dw   video_memory +  8*video_stride + 52  ; 7974h row  8 col 52
+13FE: 17                    db   17h                                    ; █
+13FF: 78 79                 dw   video_memory +  8*video_stride + 56  ; 7978h row  8 col 56
+1401: 17                    db   17h                                    ; █
+1402: 79 79                 dw   video_memory +  8*video_stride + 57  ; 7979h row  8 col 57
+1404: 17                    db   17h                                    ; █
+1405: 7C 79                 dw   video_memory +  8*video_stride + 60  ; 797Ch row  8 col 60
+1407: 17                    db   17h                                    ; █
+1408: 7F 79                 dw   video_memory +  8*video_stride + 63  ; 797Fh row  8 col 63
+140A: 17                    db   17h                                    ; █
+140B: 81 79                 dw   video_memory +  8*video_stride + 65  ; 7981h row  8 col 65
+140D: 17                    db   17h                                    ; █
+140E: 82 79                 dw   video_memory +  8*video_stride + 66  ; 7982h row  8 col 66
+1410: 17                    db   17h                                    ; █
+1411: 83 79                 dw   video_memory +  8*video_stride + 67  ; 7983h row  8 col 67
+1413: 17                    db   17h                                    ; █
+1414: 84 79                 dw   video_memory +  8*video_stride + 68  ; 7984h row  8 col 68
+1416: 17                    db   17h                                    ; █
+1417: 85 79                 dw   video_memory +  8*video_stride + 69  ; 7985h row  8 col 69
+1419: 80                    db   80h                                    ; inverse blank
+141A: 86 79                 dw   video_memory +  8*video_stride + 70  ; 7986h row  8 col 70
+141C: 07                    db   07h                                    ; ▜
+141D: 87 79                 dw   video_memory +  8*video_stride + 71  ; 7987h row  8 col 71
+
+141F: 06                    db   06h                                    ; ▐
+1420: 9D 79                 dw   video_memory +  9*video_stride + 15  ; 799Dh row  9 col 15
+1422: 17                    db   17h                                    ; █
+1423: 9E 79                 dw   video_memory +  9*video_stride + 16  ; 799Eh row  9 col 16
+1425: 11                    db   11h                                    ; ▌
+1426: 9F 79                 dw   video_memory +  9*video_stride + 17  ; 799Fh row  9 col 17
+1428: 82                    db   82h                                    ; inverse ▝
+1429: A3 79                 dw   video_memory +  9*video_stride + 21  ; 79A3h row  9 col 21
+142B: 17                    db   17h                                    ; █
+142C: A6 79                 dw   video_memory +  9*video_stride + 24  ; 79A6h row  9 col 24
+142E: 17                    db   17h                                    ; █
+142F: A8 79                 dw   video_memory +  9*video_stride + 26  ; 79A8h row  9 col 26
+1431: 17                    db   17h                                    ; █
+1432: AB 79                 dw   video_memory +  9*video_stride + 29  ; 79ABh row  9 col 29
+1434: 17                    db   17h                                    ; █
+1435: AE 79                 dw   video_memory +  9*video_stride + 32  ; 79AEh row  9 col 32
+1437: 17                    db   17h                                    ; █
+1438: AF 79                 dw   video_memory +  9*video_stride + 33  ; 79AFh row  9 col 33
+143A: 17                    db   17h                                    ; █
+143B: B1 79                 dw   video_memory +  9*video_stride + 35  ; 79B1h row  9 col 35
+143D: 17                    db   17h                                    ; █
+143E: B4 79                 dw   video_memory +  9*video_stride + 38  ; 79B4h row  9 col 38
+1440: 17                    db   17h                                    ; █
+1441: B6 79                 dw   video_memory +  9*video_stride + 40  ; 79B6h row  9 col 40
+1443: 17                    db   17h                                    ; █
+1444: BB 79                 dw   video_memory +  9*video_stride + 45  ; 79BBh row  9 col 45
+1446: 17                    db   17h                                    ; █
+1447: BE 79                 dw   video_memory +  9*video_stride + 48  ; 79BEh row  9 col 48
+1449: 17                    db   17h                                    ; █
+144A: C0 79                 dw   video_memory +  9*video_stride + 50  ; 79C0h row  9 col 50
+144C: 17                    db   17h                                    ; █
+144D: C3 79                 dw   video_memory +  9*video_stride + 53  ; 79C3h row  9 col 53
+144F: 17                    db   17h                                    ; █
+1450: C5 79                 dw   video_memory +  9*video_stride + 55  ; 79C5h row  9 col 55
+1452: 17                    db   17h                                    ; █
+1453: C8 79                 dw   video_memory +  9*video_stride + 58  ; 79C8h row  9 col 58
+1455: 17                    db   17h                                    ; █
+1456: CA 79                 dw   video_memory +  9*video_stride + 60  ; 79CAh row  9 col 60
+1458: 17                    db   17h                                    ; █
+1459: CD 79                 dw   video_memory +  9*video_stride + 63  ; 79CDh row  9 col 63
+145B: 17                    db   17h                                    ; █
+145C: D1 79                 dw   video_memory +  9*video_stride + 67  ; 79D1h row  9 col 67
+145E: 80                    db   80h                                    ; inverse blank
+145F: D5 79                 dw   video_memory +  9*video_stride + 71  ; 79D5h row  9 col 71
+
+1461: 04                    db   04h                                    ; ▗
+1462: EA 79                 dw   video_memory + 10*video_stride + 14  ; 79EAh row 10 col 14
+1464: 13                    db   13h                                    ; ▛
+1465: EB 79                 dw   video_memory + 10*video_stride + 15  ; 79EBh row 10 col 15
+1467: 03                    db   03h                                    ; ▀
+1468: EC 79                 dw   video_memory + 10*video_stride + 16  ; 79ECh row 10 col 16
+146A: 07                    db   07h                                    ; ▜
+146B: ED 79                 dw   video_memory + 10*video_stride + 17  ; 79EDh row 10 col 17
+146D: 10                    db   10h                                    ; ▖
+146E: EE 79                 dw   video_memory + 10*video_stride + 18  ; 79EEh row 10 col 18
+1470: 82                    db   82h                                    ; inverse ▝
+1471: F1 79                 dw   video_memory + 10*video_stride + 21  ; 79F1h row 10 col 21
+1473: 17                    db   17h                                    ; █
+1474: F4 79                 dw   video_memory + 10*video_stride + 24  ; 79F4h row 10 col 24
+1476: 17                    db   17h                                    ; █
+1477: F6 79                 dw   video_memory + 10*video_stride + 26  ; 79F6h row 10 col 26
+1479: 17                    db   17h                                    ; █
+147A: F9 79                 dw   video_memory + 10*video_stride + 29  ; 79F9h row 10 col 29
+147C: 17                    db   17h                                    ; █
+147D: FB 79                 dw   video_memory + 10*video_stride + 31  ; 79FBh row 10 col 31
+147F: 17                    db   17h                                    ; █
+1480: FD 79                 dw   video_memory + 10*video_stride + 33  ; 79FDh row 10 col 33
+1482: 17                    db   17h                                    ; █
+1483: FF 79                 dw   video_memory + 10*video_stride + 35  ; 79FFh row 10 col 35
+1485: 17                    db   17h                                    ; █
+1486: 00 7A                 dw   video_memory + 10*video_stride + 36  ; 7A00h row 10 col 36
+1488: 17                    db   17h                                    ; █
+1489: 01 7A                 dw   video_memory + 10*video_stride + 37  ; 7A01h row 10 col 37
+148B: 17                    db   17h                                    ; █
+148C: 04 7A                 dw   video_memory + 10*video_stride + 40  ; 7A04h row 10 col 40
+148E: 17                    db   17h                                    ; █
+148F: 05 7A                 dw   video_memory + 10*video_stride + 41  ; 7A05h row 10 col 41
+1491: 17                    db   17h                                    ; █
+1492: 06 7A                 dw   video_memory + 10*video_stride + 42  ; 7A06h row 10 col 42
+1494: 17                    db   17h                                    ; █
+1495: 09 7A                 dw   video_memory + 10*video_stride + 45  ; 7A09h row 10 col 45
+1497: 17                    db   17h                                    ; █
+1498: 0C 7A                 dw   video_memory + 10*video_stride + 48  ; 7A0Ch row 10 col 48
+149A: 17                    db   17h                                    ; █
+149B: 0E 7A                 dw   video_memory + 10*video_stride + 50  ; 7A0Eh row 10 col 50
+149D: 17                    db   17h                                    ; █
+149E: 13 7A                 dw   video_memory + 10*video_stride + 55  ; 7A13h row 10 col 55
+14A0: 17                    db   17h                                    ; █
+14A1: 16 7A                 dw   video_memory + 10*video_stride + 58  ; 7A16h row 10 col 58
+14A3: 17                    db   17h                                    ; █
+14A4: 18 7A                 dw   video_memory + 10*video_stride + 60  ; 7A18h row 10 col 60
+14A6: 17                    db   17h                                    ; █
+14A7: 19 7A                 dw   video_memory + 10*video_stride + 61  ; 7A19h row 10 col 61
+14A9: 17                    db   17h                                    ; █
+14AA: 1A 7A                 dw   video_memory + 10*video_stride + 62  ; 7A1Ah row 10 col 62
+14AC: 17                    db   17h                                    ; █
+14AD: 1B 7A                 dw   video_memory + 10*video_stride + 63  ; 7A1Bh row 10 col 63
+14AF: 17                    db   17h                                    ; █
+14B0: 1F 7A                 dw   video_memory + 10*video_stride + 67  ; 7A1Fh row 10 col 67
+14B2: 80                    db   80h                                    ; inverse blank
+14B3: 23 7A                 dw   video_memory + 10*video_stride + 71  ; 7A23h row 10 col 71
+
+14B5: 15                    db   15h                                    ; ▙
+14B6: 37 7A                 dw   video_memory + 11*video_stride + 13  ; 7A37h row 11 col 13
+14B8: 17                    db   17h                                    ; █
+14B9: 38 7A                 dw   video_memory + 11*video_stride + 14  ; 7A38h row 11 col 14
+14BB: 01                    db   01h                                    ; ▘
+14BC: 39 7A                 dw   video_memory + 11*video_stride + 15  ; 7A39h row 11 col 15
+14BE: 02                    db   02h                                    ; ▝
+14BF: 3B 7A                 dw   video_memory + 11*video_stride + 17  ; 7A3Bh row 11 col 17
+14C1: 17                    db   17h                                    ; █
+14C2: 3C 7A                 dw   video_memory + 11*video_stride + 18  ; 7A3Ch row 11 col 18
+14C4: 16                    db   16h                                    ; ▟
+14C5: 3D 7A                 dw   video_memory + 11*video_stride + 19  ; 7A3Dh row 11 col 19
+14C7: 82                    db   82h                                    ; inverse ▝
+14C8: 3F 7A                 dw   video_memory + 11*video_stride + 21  ; 7A3Fh row 11 col 21
+14CA: 17                    db   17h                                    ; █
+14CB: 41 7A                 dw   video_memory + 11*video_stride + 23  ; 7A41h row 11 col 23
+14CD: 17                    db   17h                                    ; █
+14CE: 42 7A                 dw   video_memory + 11*video_stride + 24  ; 7A42h row 11 col 24
+14D0: 17                    db   17h                                    ; █
+14D1: 43 7A                 dw   video_memory + 11*video_stride + 25  ; 7A43h row 11 col 25
+14D3: 17                    db   17h                                    ; █
+14D4: 44 7A                 dw   video_memory + 11*video_stride + 26  ; 7A44h row 11 col 26
+14D6: 17                    db   17h                                    ; █
+14D7: 45 7A                 dw   video_memory + 11*video_stride + 27  ; 7A45h row 11 col 27
+14D9: 17                    db   17h                                    ; █
+14DA: 47 7A                 dw   video_memory + 11*video_stride + 29  ; 7A47h row 11 col 29
+14DC: 17                    db   17h                                    ; █
+14DD: 48 7A                 dw   video_memory + 11*video_stride + 30  ; 7A48h row 11 col 30
+14DF: 17                    db   17h                                    ; █
+14E0: 4B 7A                 dw   video_memory + 11*video_stride + 33  ; 7A4Bh row 11 col 33
+14E2: 17                    db   17h                                    ; █
+14E3: 4D 7A                 dw   video_memory + 11*video_stride + 35  ; 7A4Dh row 11 col 35
+14E5: 17                    db   17h                                    ; █
+14E6: 50 7A                 dw   video_memory + 11*video_stride + 38  ; 7A50h row 11 col 38
+14E8: 17                    db   17h                                    ; █
+14E9: 52 7A                 dw   video_memory + 11*video_stride + 40  ; 7A52h row 11 col 40
+14EB: 17                    db   17h                                    ; █
+14EC: 57 7A                 dw   video_memory + 11*video_stride + 45  ; 7A57h row 11 col 45
+14EE: 17                    db   17h                                    ; █
+14EF: 58 7A                 dw   video_memory + 11*video_stride + 46  ; 7A58h row 11 col 46
+14F1: 17                    db   17h                                    ; █
+14F2: 59 7A                 dw   video_memory + 11*video_stride + 47  ; 7A59h row 11 col 47
+14F4: 17                    db   17h                                    ; █
+14F5: 5C 7A                 dw   video_memory + 11*video_stride + 50  ; 7A5Ch row 11 col 50
+14F7: 17                    db   17h                                    ; █
+14F8: 5F 7A                 dw   video_memory + 11*video_stride + 53  ; 7A5Fh row 11 col 53
+14FA: 17                    db   17h                                    ; █
+14FB: 61 7A                 dw   video_memory + 11*video_stride + 55  ; 7A61h row 11 col 55
+14FD: 17                    db   17h                                    ; █
+14FE: 62 7A                 dw   video_memory + 11*video_stride + 56  ; 7A62h row 11 col 56
+1500: 17                    db   17h                                    ; █
+1501: 63 7A                 dw   video_memory + 11*video_stride + 57  ; 7A63h row 11 col 57
+1503: 17                    db   17h                                    ; █
+1504: 64 7A                 dw   video_memory + 11*video_stride + 58  ; 7A64h row 11 col 58
+1506: 17                    db   17h                                    ; █
+1507: 66 7A                 dw   video_memory + 11*video_stride + 60  ; 7A66h row 11 col 60
+1509: 17                    db   17h                                    ; █
+150A: 69 7A                 dw   video_memory + 11*video_stride + 63  ; 7A69h row 11 col 63
+150C: 17                    db   17h                                    ; █
+150D: 6D 7A                 dw   video_memory + 11*video_stride + 67  ; 7A6Dh row 11 col 67
+150F: 80                    db   80h                                    ; inverse blank
+1510: 71 7A                 dw   video_memory + 11*video_stride + 71  ; 7A71h row 11 col 71
+
+1512: 2E                    db   2Eh                                    ; '.'
+1513: 82 7A                 dw   video_memory + 12*video_stride + 10  ; 7A82h row 12 col 10
+1515: 01                    db   01h                                    ; ▘
+1516: 86 7A                 dw   video_memory + 12*video_stride + 14  ; 7A86h row 12 col 14
+1518: 02                    db   02h                                    ; ▝
+1519: 8A 7A                 dw   video_memory + 12*video_stride + 18  ; 7A8Ah row 12 col 18
+151B: 82                    db   82h                                    ; inverse ▝
+151C: 8D 7A                 dw   video_memory + 12*video_stride + 21  ; 7A8Dh row 12 col 21
+151E: 17                    db   17h                                    ; █
+151F: 8F 7A                 dw   video_memory + 12*video_stride + 23  ; 7A8Fh row 12 col 23
+1521: 17                    db   17h                                    ; █
+1522: 93 7A                 dw   video_memory + 12*video_stride + 27  ; 7A93h row 12 col 27
+1524: 17                    db   17h                                    ; █
+1525: 95 7A                 dw   video_memory + 12*video_stride + 29  ; 7A95h row 12 col 29
+1527: 17                    db   17h                                    ; █
+1528: 99 7A                 dw   video_memory + 12*video_stride + 33  ; 7A99h row 12 col 33
+152A: 17                    db   17h                                    ; █
+152B: 9B 7A                 dw   video_memory + 12*video_stride + 35  ; 7A9Bh row 12 col 35
+152D: 17                    db   17h                                    ; █
+152E: 9C 7A                 dw   video_memory + 12*video_stride + 36  ; 7A9Ch row 12 col 36
+1530: 17                    db   17h                                    ; █
+1531: 9D 7A                 dw   video_memory + 12*video_stride + 37  ; 7A9Dh row 12 col 37
+1533: 17                    db   17h                                    ; █
+1534: A0 7A                 dw   video_memory + 12*video_stride + 40  ; 7AA0h row 12 col 40
+1536: 17                    db   17h                                    ; █
+1537: A1 7A                 dw   video_memory + 12*video_stride + 41  ; 7AA1h row 12 col 41
+1539: 17                    db   17h                                    ; █
+153A: A2 7A                 dw   video_memory + 12*video_stride + 42  ; 7AA2h row 12 col 42
+153C: 17                    db   17h                                    ; █
+153D: A3 7A                 dw   video_memory + 12*video_stride + 43  ; 7AA3h row 12 col 43
+153F: 17                    db   17h                                    ; █
+1540: A5 7A                 dw   video_memory + 12*video_stride + 45  ; 7AA5h row 12 col 45
+1542: 17                    db   17h                                    ; █
+1543: AB 7A                 dw   video_memory + 12*video_stride + 51  ; 7AABh row 12 col 51
+1545: 17                    db   17h                                    ; █
+1546: AC 7A                 dw   video_memory + 12*video_stride + 52  ; 7AACh row 12 col 52
+1548: 17                    db   17h                                    ; █
+1549: AF 7A                 dw   video_memory + 12*video_stride + 55  ; 7AAFh row 12 col 55
+154B: 17                    db   17h                                    ; █
+154C: B2 7A                 dw   video_memory + 12*video_stride + 58  ; 7AB2h row 12 col 58
+154E: 17                    db   17h                                    ; █
+154F: B4 7A                 dw   video_memory + 12*video_stride + 60  ; 7AB4h row 12 col 60
+1551: 17                    db   17h                                    ; █
+1552: B7 7A                 dw   video_memory + 12*video_stride + 63  ; 7AB7h row 12 col 63
+1554: 17                    db   17h                                    ; █
+1555: BB 7A                 dw   video_memory + 12*video_stride + 67  ; 7ABBh row 12 col 67
+1557: 80                    db   80h                                    ; inverse blank
+1558: BF 7A                 dw   video_memory + 12*video_stride + 71  ; 7ABFh row 12 col 71
+
+155A: 2E                    db   2Eh                                    ; '.'
+155B: D8 7A                 dw   video_memory + 13*video_stride + 18  ; 7AD8h row 13 col 18
+155D: 2E                    db   2Eh                                    ; '.'
+155E: E6 7A                 dw   video_memory + 13*video_stride + 32  ; 7AE6h row 13 col 32
+1560: 2E                    db   2Eh                                    ; '.'
+1561: E9 7A                 dw   video_memory + 13*video_stride + 35  ; 7AE9h row 13 col 35
+1563: 04                    db   04h                                    ; ▗
+1564: FF 7A                 dw   video_memory + 13*video_stride + 57  ; 7AFFh row 13 col 57
+1566: 14                    db   14h                                    ; ▄
+1567: 00 7B                 dw   video_memory + 13*video_stride + 58  ; 7B00h row 13 col 58
+1569: 17                    db   17h                                    ; █
+156A: 01 7B                 dw   video_memory + 13*video_stride + 59  ; 7B01h row 13 col 59
+156C: 14                    db   14h                                    ; ▄
+156D: 02 7B                 dw   video_memory + 13*video_stride + 60  ; 7B02h row 13 col 60
+156F: 10                    db   10h                                    ; ▖
+1570: 03 7B                 dw   video_memory + 13*video_stride + 61  ; 7B03h row 13 col 61
+1572: 2E                    db   2Eh                                    ; '.'
+1573: 0C 7B                 dw   video_memory + 13*video_stride + 70  ; 7B0Ch row 13 col 70
+
+1575: 2E                    db   2Eh                                    ; '.'
+1576: 2A 7B                 dw   video_memory + 14*video_stride + 22  ; 7B2Ah row 14 col 22
+1578: 2E                    db   2Eh                                    ; '.'
+1579: 46 7B                 dw   video_memory + 14*video_stride + 50  ; 7B46h row 14 col 50
+157B: 04                    db   04h                                    ; ▗
+157C: 4C 7B                 dw   video_memory + 14*video_stride + 56  ; 7B4Ch row 14 col 56
+157E: 17                    db   17h                                    ; █
+157F: 4D 7B                 dw   video_memory + 14*video_stride + 57  ; 7B4Dh row 14 col 57
+1581: 17                    db   17h                                    ; █
+1582: 4E 7B                 dw   video_memory + 14*video_stride + 58  ; 7B4Eh row 14 col 58
+1584: 17                    db   17h                                    ; █
+1585: 4F 7B                 dw   video_memory + 14*video_stride + 59  ; 7B4Fh row 14 col 59
+1587: 17                    db   17h                                    ; █
+1588: 50 7B                 dw   video_memory + 14*video_stride + 60  ; 7B50h row 14 col 60
+158A: 17                    db   17h                                    ; █
+158B: 51 7B                 dw   video_memory + 14*video_stride + 61  ; 7B51h row 14 col 61
+158D: 10                    db   10h                                    ; ▖
+158E: 52 7B                 dw   video_memory + 14*video_stride + 62  ; 7B52h row 14 col 62
+
+1590: 2E                    db   2Eh                                    ; '.'
+1591: 7F 7B                 dw   video_memory + 15*video_stride + 29  ; 7B7Fh row 15 col 29
+1593: 2E                    db   2Eh                                    ; '.'
+1594: 83 7B                 dw   video_memory + 15*video_stride + 33  ; 7B83h row 15 col 33
+1596: 2E                    db   2Eh                                    ; '.'
+1597: 90 7B                 dw   video_memory + 15*video_stride + 46  ; 7B90h row 15 col 46
+1599: 03                    db   03h                                    ; ▀
+159A: 9A 7B                 dw   video_memory + 15*video_stride + 56  ; 7B9Ah row 15 col 56
+159C: 07                    db   07h                                    ; ▜
+159D: 9B 7B                 dw   video_memory + 15*video_stride + 57  ; 7B9Bh row 15 col 57
+159F: 13                    db   13h                                    ; ▛
+15A0: 9F 7B                 dw   video_memory + 15*video_stride + 61  ; 7B9Fh row 15 col 61
+15A2: 03                    db   03h                                    ; ▀
+15A3: A0 7B                 dw   video_memory + 15*video_stride + 62  ; 7BA0h row 15 col 62
+15A5: 2E                    db   2Eh                                    ; '.'
+15A6: A3 7B                 dw   video_memory + 15*video_stride + 65  ; 7BA3h row 15 col 65
+15A8: 2E                    db   2Eh                                    ; '.'
+15A9: A9 7B                 dw   video_memory + 15*video_stride + 71  ; 7BA9h row 15 col 71
+
+15AB: 2E                    db   2Eh                                    ; '.'
+15AC: BB 7B                 dw   video_memory + 16*video_stride + 11  ; 7BBBh row 16 col 11
+15AE: 2E                    db   2Eh                                    ; '.'
+15AF: DA 7B                 dw   video_memory + 16*video_stride + 42  ; 7BDAh row 16 col 42
+15B1: 16                    db   16h                                    ; ▟
+15B2: E9 7B                 dw   video_memory + 16*video_stride + 57  ; 7BE9h row 16 col 57
+15B4: 14                    db   14h                                    ; ▄
+15B5: EB 7B                 dw   video_memory + 16*video_stride + 59  ; 7BEBh row 16 col 59
+15B7: 15                    db   15h                                    ; ▙
+15B8: ED 7B                 dw   video_memory + 16*video_stride + 61  ; 7BEDh row 16 col 61
+
+15BA: 04                    db   04h                                    ; ▗
+15BB: 11 7C                 dw   video_memory + 17*video_stride + 19  ; 7C11h row 17 col 19
+15BD: 15                    db   15h                                    ; ▙
+15BE: 12 7C                 dw   video_memory + 17*video_stride + 20  ; 7C12h row 17 col 20
+15C0: 2E                    db   2Eh                                    ; '.'
+15C1: 25 7C                 dw   video_memory + 17*video_stride + 39  ; 7C25h row 17 col 39
+15C3: 13                    db   13h                                    ; ▛
+15C4: 37 7C                 dw   video_memory + 17*video_stride + 57  ; 7C37h row 17 col 57
+15C6: 06                    db   06h                                    ; ▐
+15C7: 38 7C                 dw   video_memory + 17*video_stride + 58  ; 7C38h row 17 col 58
+15C9: 17                    db   17h                                    ; █
+15CA: 39 7C                 dw   video_memory + 17*video_stride + 59  ; 7C39h row 17 col 59
+15CC: 11                    db   11h                                    ; ▌
+15CD: 3A 7C                 dw   video_memory + 17*video_stride + 60  ; 7C3Ah row 17 col 60
+15CF: 07                    db   07h                                    ; ▜
+15D0: 3B 7C                 dw   video_memory + 17*video_stride + 61  ; 7C3Bh row 17 col 61
+15D2: 2E                    db   2Eh                                    ; '.'
+15D3: 42 7C                 dw   video_memory + 17*video_stride + 68  ; 7C42h row 17 col 68
+
+15D5: 04                    db   04h                                    ; ▗
+15D6: 5E 7C                 dw   video_memory + 18*video_stride + 18  ; 7C5Eh row 18 col 18
+15D8: 17                    db   17h                                    ; █
+15D9: 5F 7C                 dw   video_memory + 18*video_stride + 19  ; 7C5Fh row 18 col 19
+15DB: 17                    db   17h                                    ; █
+15DC: 60 7C                 dw   video_memory + 18*video_stride + 20  ; 7C60h row 18 col 20
+15DE: 15                    db   15h                                    ; ▙
+15DF: 61 7C                 dw   video_memory + 18*video_stride + 21  ; 7C61h row 18 col 21
+15E1: 2E                    db   2Eh                                    ; '.'
+15E2: 6C 7C                 dw   video_memory + 18*video_stride + 32  ; 7C6Ch row 18 col 32
+15E4: 17                    db   17h                                    ; █
+15E5: 85 7C                 dw   video_memory + 18*video_stride + 57  ; 7C85h row 18 col 57
+15E7: 14                    db   14h                                    ; ▄
+15E8: 86 7C                 dw   video_memory + 18*video_stride + 58  ; 7C86h row 18 col 58
+15EA: 17                    db   17h                                    ; █
+15EB: 87 7C                 dw   video_memory + 18*video_stride + 59  ; 7C87h row 18 col 59
+15ED: 14                    db   14h                                    ; ▄
+15EE: 88 7C                 dw   video_memory + 18*video_stride + 60  ; 7C88h row 18 col 60
+15F0: 17                    db   17h                                    ; █
+15F1: 89 7C                 dw   video_memory + 18*video_stride + 61  ; 7C89h row 18 col 61
+
+15F3: 2E                    db   2Eh                                    ; '.'
+15F4: A4 7C                 dw   video_memory + 19*video_stride + 10  ; 7CA4h row 19 col 10
+15F6: 11                    db   11h                                    ; ▌
+15F7: AE 7C                 dw   video_memory + 19*video_stride + 20  ; 7CAEh row 19 col 20
+15F9: 2E                    db   2Eh                                    ; '.'
+15FA: C2 7C                 dw   video_memory + 19*video_stride + 40  ; 7CC2h row 19 col 40
+15FC: 2E                    db   2Eh                                    ; '.'
+15FD: CD 7C                 dw   video_memory + 19*video_stride + 51  ; 7CCDh row 19 col 51
+15FF: 06                    db   06h                                    ; ▐
+1600: D4 7C                 dw   video_memory + 19*video_stride + 58  ; 7CD4h row 19 col 58
+1602: 17                    db   17h                                    ; █
+1603: D5 7C                 dw   video_memory + 19*video_stride + 59  ; 7CD5h row 19 col 59
+1605: 11                    db   11h                                    ; ▌
+1606: D6 7C                 dw   video_memory + 19*video_stride + 60  ; 7CD6h row 19 col 60
+1608: 2E                    db   2Eh                                    ; '.'
+1609: E0 7C                 dw   video_memory + 19*video_stride + 70  ; 7CE0h row 19 col 70
+
+160B: 2E                    db   2Eh                                    ; '.'
+160C: F5 7C                 dw   video_memory + 20*video_stride + 13  ; 7CF5h row 20 col 13
+160E: 2E                    db   2Eh                                    ; '.'
+160F: 03 7D                 dw   video_memory + 20*video_stride + 27  ; 7D03h row 20 col 27
+1611: 2E                    db   2Eh                                    ; '.'
+1612: 16 7D                 dw   video_memory + 20*video_stride + 46  ; 7D16h row 20 col 46
+1614: 04                    db   04h                                    ; ▗
+1615: 21 7D                 dw   video_memory + 20*video_stride + 57  ; 7D21h row 20 col 57
+1617: 13                    db   13h                                    ; ▛
+1618: 22 7D                 dw   video_memory + 20*video_stride + 58  ; 7D22h row 20 col 58
+161A: 03                    db   03h                                    ; ▀
+161B: 23 7D                 dw   video_memory + 20*video_stride + 59  ; 7D23h row 20 col 59
+161D: 07                    db   07h                                    ; ▜
+161E: 24 7D                 dw   video_memory + 20*video_stride + 60  ; 7D24h row 20 col 60
+1620: 10                    db   10h                                    ; ▖
+1621: 25 7D                 dw   video_memory + 20*video_stride + 61  ; 7D25h row 20 col 61
+1623: 2E                    db   2Eh                                    ; '.'
+1624: 2C 7D                 dw   video_memory + 20*video_stride + 68  ; 7D2Ch row 20 col 68
+
+1626: 2E                    db   2Eh                                    ; '.'
+1627: 57 7D                 dw   video_memory + 21*video_stride + 33  ; 7D57h row 21 col 33
+1629: 2E                    db   2Eh                                    ; '.'
+162A: 60 7D                 dw   video_memory + 21*video_stride + 42  ; 7D60h row 21 col 42
+162C: 15                    db   15h                                    ; ▙
+162D: 6E 7D                 dw   video_memory + 21*video_stride + 56  ; 7D6Eh row 21 col 56
+162F: 17                    db   17h                                    ; █
+1630: 6F 7D                 dw   video_memory + 21*video_stride + 57  ; 7D6Fh row 21 col 57
+1632: 01                    db   01h                                    ; ▘
+1633: 70 7D                 dw   video_memory + 21*video_stride + 58  ; 7D70h row 21 col 58
+1635: 02                    db   02h                                    ; ▝
+1636: 72 7D                 dw   video_memory + 21*video_stride + 60  ; 7D72h row 21 col 60
+1638: 17                    db   17h                                    ; █
+1639: 73 7D                 dw   video_memory + 21*video_stride + 61  ; 7D73h row 21 col 61
+163B: 16                    db   16h                                    ; ▟
+163C: 74 7D                 dw   video_memory + 21*video_stride + 62  ; 7D74h row 21 col 62
+
+163E: 06                    db   06h                                    ; ▐
+163F: 97 7D                 dw   video_memory + 22*video_stride + 19  ; 7D97h row 22 col 19
+1641: 16                    db   16h                                    ; ▟
+1642: 98 7D                 dw   video_memory + 22*video_stride + 20  ; 7D98h row 22 col 20
+1644: 01                    db   01h                                    ; ▘
+1645: BD 7D                 dw   video_memory + 22*video_stride + 57  ; 7DBDh row 22 col 57
+1647: 02                    db   02h                                    ; ▝
+1648: C1 7D                 dw   video_memory + 22*video_stride + 61  ; 7DC1h row 22 col 61
+
+164A: 2E                    db   2Eh                                    ; '.'
+164B: DC 7D                 dw   video_memory + 23*video_stride + 10  ; 7DDCh row 23 col 10
+164D: 11                    db   11h                                    ; ▌
+164E: E6 7D                 dw   video_memory + 23*video_stride + 20  ; 7DE6h row 23 col 20
+1650: 2E                    db   2Eh                                    ; '.'
+1651: EA 7D                 dw   video_memory + 23*video_stride + 24  ; 7DEAh row 23 col 24
+1653: 90                    db   90h                                    ; inverse ▖
+1654: F2 7D                 dw   video_memory + 23*video_stride + 32  ; 7DF2h row 23 col 32
+1656: 80                    db   80h                                    ; inverse blank
+1657: 04 7E                 dw   video_memory + 23*video_stride + 50  ; 7E04h row 23 col 50
+
+1659: 2E                    db   2Eh                                    ; '.'
+165A: 2A 7E                 dw   video_memory + 24*video_stride + 10  ; 7E2Ah row 24 col 10
+165C: 11                    db   11h                                    ; ▌
+165D: 34 7E                 dw   video_memory + 24*video_stride + 20  ; 7E34h row 24 col 20
+165F: 90                    db   90h                                    ; inverse ▖
+1660: 40 7E                 dw   video_memory + 24*video_stride + 32  ; 7E40h row 24 col 32
+1662: 12                    db   12h                                    ; ▞
+1663: 43 7E                 dw   video_memory + 24*video_stride + 35  ; 7E43h row 24 col 35
+1665: 12                    db   12h                                    ; ▞
+1666: 44 7E                 dw   video_memory + 24*video_stride + 36  ; 7E44h row 24 col 36
+1668: 10                    db   10h                                    ; ▖
+1669: 45 7E                 dw   video_memory + 24*video_stride + 37  ; 7E45h row 24 col 37
+166B: 05                    db   05h                                    ; ▚
+166C: 46 7E                 dw   video_memory + 24*video_stride + 38  ; 7E46h row 24 col 38
+166E: 12                    db   12h                                    ; ▞
+166F: 47 7E                 dw   video_memory + 24*video_stride + 39  ; 7E47h row 24 col 39
+1671: 14                    db   14h                                    ; ▄
+1672: 49 7E                 dw   video_memory + 24*video_stride + 41  ; 7E49h row 24 col 41
+1674: 14                    db   14h                                    ; ▄
+1675: 4A 7E                 dw   video_memory + 24*video_stride + 42  ; 7E4Ah row 24 col 42
+1677: 16                    db   16h                                    ; ▟
+1678: 4C 7E                 dw   video_memory + 24*video_stride + 44  ; 7E4Ch row 24 col 44
+167A: 12                    db   12h                                    ; ▞
+167B: 4E 7E                 dw   video_memory + 24*video_stride + 46  ; 7E4Eh row 24 col 46
+167D: 05                    db   05h                                    ; ▚
+167E: 4F 7E                 dw   video_memory + 24*video_stride + 47  ; 7E4Fh row 24 col 47
+1680: 80                    db   80h                                    ; inverse blank
+1681: 52 7E                 dw   video_memory + 24*video_stride + 50  ; 7E52h row 24 col 50
+
+1683: 14                    db   14h                                    ; ▄
+1684: 7F 7E                 dw   video_memory + 25*video_stride + 17  ; 7E7Fh row 25 col 17
+1686: 04                    db   04h                                    ; ▗
+1687: 80 7E                 dw   video_memory + 25*video_stride + 18  ; 7E80h row 25 col 18
+1689: 16                    db   16h                                    ; ▟
+168A: 81 7E                 dw   video_memory + 25*video_stride + 19  ; 7E81h row 25 col 19
+168C: 17                    db   17h                                    ; █
+168D: 82 7E                 dw   video_memory + 25*video_stride + 20  ; 7E82h row 25 col 20
+168F: 14                    db   14h                                    ; ▄
+1690: 83 7E                 dw   video_memory + 25*video_stride + 21  ; 7E83h row 25 col 21
+1692: 04                    db   04h                                    ; ▗
+1693: 84 7E                 dw   video_memory + 25*video_stride + 22  ; 7E84h row 25 col 22
+1695: 10                    db   10h                                    ; ▖
+1696: 85 7E                 dw   video_memory + 25*video_stride + 23  ; 7E85h row 25 col 23
+1698: 90                    db   90h                                    ; inverse ▖
+1699: 8E 7E                 dw   video_memory + 25*video_stride + 32  ; 7E8Eh row 25 col 32
+169B: 11                    db   11h                                    ; ▌
+169C: 91 7E                 dw   video_memory + 25*video_stride + 35  ; 7E91h row 25 col 35
+169E: 11                    db   11h                                    ; ▌
+169F: 93 7E                 dw   video_memory + 25*video_stride + 37  ; 7E93h row 25 col 37
+16A1: 12                    db   12h                                    ; ▞
+16A2: 94 7E                 dw   video_memory + 25*video_stride + 38  ; 7E94h row 25 col 38
+16A4: 05                    db   05h                                    ; ▚
+16A5: 95 7E                 dw   video_memory + 25*video_stride + 39  ; 7E95h row 25 col 39
+16A7: 03                    db   03h                                    ; ▀
+16A8: 97 7E                 dw   video_memory + 25*video_stride + 41  ; 7E97h row 25 col 41
+16AA: 03                    db   03h                                    ; ▀
+16AB: 98 7E                 dw   video_memory + 25*video_stride + 42  ; 7E98h row 25 col 42
+16AD: 06                    db   06h                                    ; ▐
+16AE: 9A 7E                 dw   video_memory + 25*video_stride + 44  ; 7E9Ah row 25 col 44
+16B0: 14                    db   14h                                    ; ▄
+16B1: 9C 7E                 dw   video_memory + 25*video_stride + 46  ; 7E9Ch row 25 col 46
+16B3: 15                    db   15h                                    ; ▙
+16B4: 9D 7E                 dw   video_memory + 25*video_stride + 47  ; 7E9Dh row 25 col 47
+16B6: 80                    db   80h                                    ; inverse blank
+16B7: A0 7E                 dw   video_memory + 25*video_stride + 50  ; 7EA0h row 25 col 50
+16B9: 31                    db   31h                                    ; '1'
+16BA: AF 7E                 dw   video_memory + 25*video_stride + 65  ; 7EAFh row 25 col 65
+16BC: 39                    db   39h                                    ; '9'
+16BD: B0 7E                 dw   video_memory + 25*video_stride + 66  ; 7EB0h row 25 col 66
+16BF: 38                    db   38h                                    ; '8'
+16C0: B1 7E                 dw   video_memory + 25*video_stride + 67  ; 7EB1h row 25 col 67
+16C2: 39                    db   39h                                    ; '9'
+16C3: B2 7E                 dw   video_memory + 25*video_stride + 68  ; 7EB2h row 25 col 68
+16C5: 67                    db   67h                                    ; Г
+16C6: B4 7E                 dw   video_memory + 25*video_stride + 70  ; 7EB4h row 25 col 70
+16C8: 2E                    db   2Eh                                    ; '.'
+16C9: B5 7E                 dw   video_memory + 25*video_stride + 71  ; 7EB5h row 25 col 71
+
+16CB: 80                    db   80h                                    ; inverse blank
+16CC: C4 7E                 dw   video_memory + 26*video_stride +  8  ; 7EC4h row 26 col  8
+16CE: 02                    db   02h                                    ; ▝
+16CF: CC 7E                 dw   video_memory + 26*video_stride + 16  ; 7ECCh row 26 col 16
+16D1: 17                    db   17h                                    ; █
+16D2: CD 7E                 dw   video_memory + 26*video_stride + 17  ; 7ECDh row 26 col 17
+16D4: 01                    db   01h                                    ; ▘
+16D5: CE 7E                 dw   video_memory + 26*video_stride + 18  ; 7ECEh row 26 col 18
+16D7: 03                    db   03h                                    ; ▀
+16D8: CF 7E                 dw   video_memory + 26*video_stride + 19  ; 7ECFh row 26 col 19
+16DA: 03                    db   03h                                    ; ▀
+16DB: D0 7E                 dw   video_memory + 26*video_stride + 20  ; 7ED0h row 26 col 20
+16DD: 01                    db   01h                                    ; ▘
+16DE: D1 7E                 dw   video_memory + 26*video_stride + 21  ; 7ED1h row 26 col 21
+16E0: 07                    db   07h                                    ; ▜
+16E1: D2 7E                 dw   video_memory + 26*video_stride + 22  ; 7ED2h row 26 col 22
+16E3: 13                    db   13h                                    ; ▛
+16E4: D3 7E                 dw   video_memory + 26*video_stride + 23  ; 7ED3h row 26 col 23
+16E6: 90                    db   90h                                    ; inverse ▖
+16E7: DC 7E                 dw   video_memory + 26*video_stride + 32  ; 7EDCh row 26 col 32
+16E9: 80                    db   80h                                    ; inverse blank
+16EA: EE 7E                 dw   video_memory + 26*video_stride + 50  ; 7EEEh row 26 col 50
+16EC: 80                    db   80h                                    ; inverse blank
+16ED: 03 7F                 dw   video_memory + 26*video_stride + 71  ; 7F03h row 26 col 71
+
+16EF: 90                    db   90h                                    ; inverse ▖
+16F0: 12 7F                 dw   video_memory + 27*video_stride +  8  ; 7F12h row 27 col  8
+
+                    ; Author signature: row 27, cols 64..70 spells "ХАРЬКОВ" (Kharkov),
+                    ; almost certainly the home city of the game's author.
+16F2: 68                    db   68h                                    ; Х
+16F3: 4A 7F                 dw   video_memory + 27*video_stride + 64  ; 7F4Ah row 27 col 64
+16F5: 61                    db   61h                                    ; А
+16F6: 4B 7F                 dw   video_memory + 27*video_stride + 65  ; 7F4Bh row 27 col 65
+16F8: 72                    db   72h                                    ; Р
+16F9: 4C 7F                 dw   video_memory + 27*video_stride + 66  ; 7F4Ch row 27 col 66
+16FB: 78                    db   78h                                    ; Ь
+16FC: 4D 7F                 dw   video_memory + 27*video_stride + 67  ; 7F4Dh row 27 col 67
+16FE: 6B                    db   6Bh                                    ; К
+16FF: 4E 7F                 dw   video_memory + 27*video_stride + 68  ; 7F4Eh row 27 col 68
+1701: 6F                    db   6Fh                                    ; О
+1702: 4F 7F                 dw   video_memory + 27*video_stride + 69  ; 7F4Fh row 27 col 69
+1704: 77                    db   77h                                    ; В
+1705: 50 7F                 dw   video_memory + 27*video_stride + 70  ; 7F50h row 27 col 70
+
+1707: 1B                    db   1Bh                                    ; end-of-table sentinel
+                    ; ---- Trailing 8 bytes at 1708h..170Fh (not reachable) ----
+                    ; Disassembled: "cpi 01h / jz difficulty_easy / cpi 02h / jz ??" --
+                    ; looks like a leftover/earlier-draft copy of the difficulty dispatch
+                    ; at apply_difficulty. The final jz is truncated (only 2 of 3 bytes).
+                    ; run_patch_table already stopped at the 1Bh sentinel, so these bytes
+                    ; are never executed.
+1708: FE 01 CA 5E           db   0FEh, 01h, 0CAh, 5Eh, 12h, 0FEh, 02h, 0CAh                 ; 1708h: dead fragment
+170C: 12 FE 02 CA
+
